@@ -2,6 +2,8 @@
 
 A local **desktop app** (and browser app) for [audio.cpp](https://github.com/0xShug0/audio.cpp): generate **TTS**, **clone a voice** from an uploaded clip **or a live mic recording**, **transcribe** audio (ASR), run **page-photo OCR**, keep a **library of readings**, and **start/stop** the inference server — from a native window or your browser. It's also the backend for the [Android companion app](https://github.com/CaptainArni/audiocpp-android).
 
+![audio.cpp Studio — Text to Speech tab](docs/screenshot-studio.png)
+
 ## Architecture
 
 ```
