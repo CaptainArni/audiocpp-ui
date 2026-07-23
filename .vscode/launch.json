@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: FastAPI",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": ["main:app", "--reload", "--port", "8000"],
+            "cwd": "${workspaceFolder}/backend",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+        },
+        {
+            "name": "Python: Desktop App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/desktop_app.py",
+            "cwd": "${workspaceFolder}/backend",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+        },
+        {
+            "name": "Python: Browser App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/browser_app.py",
+            "cwd": "${workspaceFolder}/backend",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+        }
+    ]
+}

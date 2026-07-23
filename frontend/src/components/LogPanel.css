@@ -1,0 +1,29 @@
+/* Log viewer line markers. Token foreground colours come from the Monarch
+   language/theme (see lib/logLanguage.ts); these only add a coloured left bar
+   in the gutter and a faint background tint for the noteworthy levels, so they
+   don't fight the syntax highlighting. */
+
+/* Coloured left bar in the line-decorations margin. */
+.logbar-info {
+  border-left: 3px solid #388bfd;
+}
+.logbar-stderr {
+  border-left: 3px solid #ffa657;
+}
+.logbar-warn {
+  border-left: 3px solid #e3b341;
+}
+.logbar-error {
+  border-left: 3px solid #ff7b72;
+}
+.logbar-success {
+  border-left: 3px solid #3fb950;
+}
+
+/* Whole-line background tint for the levels worth spotting at a glance. */
+.logline-error {
+  background: rgba(248, 81, 73, 0.09);
+}
+.logline-warn {
+  background: rgba(210, 153, 34, 0.08);
+}

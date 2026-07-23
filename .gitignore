@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local machine config (copy config.example.toml → config.toml and edit)
+config.toml
+
+# Generated / runtime artifacts
+backend/static/
+backend/uploads/
+backend/generated/
+backend/voices/
+backend/readings/
+backend/webview_storage/
+data/
+
+*.log
+.DS_Store

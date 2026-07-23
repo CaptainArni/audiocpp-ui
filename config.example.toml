@@ -1,0 +1,98 @@
+# audio.cpp Studio configuration — TEMPLATE.
+#
+# Copy this file to `config.toml` (or `data/config.toml`, which overrides the
+# root and is gitignored) and edit the paths / model names for your machine.
+# `config.toml` itself is gitignored so your local setup never lands in git.
+
+[server]
+# 0.0.0.0 exposes the API to the local network so the Android companion app can
+# reach it. The inference servers below stay on loopback — the phone talks only
+# to this port, which proxies to them.
+host = "0.0.0.0"
+port = 8110
+reload = true
+log_level = "info"
+
+[server.cors]
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+[desktop]
+width = 1400
+height = 900
+min_width = 1024
+min_height = 768
+maximized = true
+
+# The audio.cpp CUDA inference server this app launches and proxies to.
+# Point `exe`/`models_dir` at your own audio.cpp build and model collection.
+[audiocpp]
+exe = "C:/path/to/audio.cpp/build/windows-cuda-release/bin/audiocpp_server.exe"
+models_dir = "C:/path/to/audio.cpp/models"
+host = "127.0.0.1"
+port = 9090
+device = 0
+threads = 1
+# Start the inference server automatically (with all known models) when the app launches.
+autostart = true
+
+# The llama.cpp server used for OCR (page photo -> text) by /api/ocr.
+# Started and managed OUTSIDE this app (e.g. llama-swap on :8080); we only send requests.
+# Omit this whole section if you don't need OCR.
+[llama]
+host = "127.0.0.1"
+port = 8080
+timeout_sec = 180
+# Which OCR model the app selects by default — an `id` from [[llama.ocr_model]] below.
+default_ocr_model = "paddleocr-vl-1-6-gguf"
+
+# Each [[llama.ocr_model]] is one selectable OCR model, surfaced to the phone and
+# the OCR test bench via GET /api/ocr/models. `model` is the name your llama.cpp
+# server (e.g. llama-swap) knows it by; the prompt and request-shaping flags differ
+# per model family, so switching model also switches how the request is built.
+#
+# Keys:
+#   id                  stable key the app stores/sends (defaults to `model`)
+#   label               human name shown in the dropdown
+#   model               model name sent to llama.cpp — must match your server config
+#   prompt              instruction/task prompt (omit to use the built-in default)
+#   temperature         default 0 (greedy, deterministic — best for OCR)
+#   max_tokens          cap on output; a long page is ~1-1.5k tokens
+#   send_thinking_kwarg send chat_template_kwargs={enable_thinking:...} (reasoning models only)
+#   enable_thinking     value for the above (keep false for OCR)
+#   repeat_penalty      curbs runaway repetition on dense pages (omit to leave at server default)
+
+# Example: a specialised OCR model (task-prompt style).
+[[llama.ocr_model]]
+id = "paddleocr-vl-1-6-gguf"
+label = "PaddleOCR-VL 1.6"
+model = "paddleocr-vl-1-6-gguf"
+# PaddleOCR-VL is a task-prompt model: plain-text extraction is literally "OCR:".
+prompt = "OCR:"
+temperature = 0
+max_tokens = 4096
+# Not a reasoning model — do NOT send chat_template_kwargs (its template may reject it).
+send_thinking_kwarg = false
+# PaddleOCR-VL is prone to looping/repeating on dense pages; a penalty curbs it.
+repeat_penalty = 1.3
+
+# Example: a general vision-language model used for OCR (reasoning-capable).
+[[llama.ocr_model]]
+id = "general-vlm"
+label = "General VLM"
+model = "your-vlm-model-name"
+# General VLMs benefit from an explicit instruction. Adjust to your language.
+prompt = """Transcribe the text on this page verbatim.
+Rules:
+- Output only the page text, no commentary, no preamble.
+- Keep the paragraph structure; separate paragraphs with a blank line.
+- Re-join words split by end-of-line hyphenation.
+- Ignore page numbers, headers, and footers.
+- If the page is unreadable or has no text, output nothing."""
+temperature = 0
+max_tokens = 2048
+# Reasoning models ramble into reasoning_content unless thinking is disabled.
+send_thinking_kwarg = true
+enable_thinking = false

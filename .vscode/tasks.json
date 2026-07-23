@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Frontend",
+            "type": "shell",
+            "command": "${workspaceFolder}\\scripts\\build.bat",
+            "options": { "cwd": "${workspaceFolder}\\scripts" },
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Desktop",
+            "type": "shell",
+            "command": "${workspaceFolder}\\scripts\\launch_desktop.bat",
+            "options": { "cwd": "${workspaceFolder}\\scripts" },
+            "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Browser",
+            "type": "shell",
+            "command": "${workspaceFolder}\\scripts\\launch_browser.bat",
+            "options": { "cwd": "${workspaceFolder}\\scripts" },
+            "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build + Launch Desktop",
+            "dependsOrder": "sequence",
+            "dependsOn": ["Build Frontend", "Launch Desktop"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Build + Launch Browser",
+            "dependsOrder": "sequence",
+            "dependsOn": ["Build Frontend", "Launch Browser"],
+            "problemMatcher": []
+        }
+    ]
+}
