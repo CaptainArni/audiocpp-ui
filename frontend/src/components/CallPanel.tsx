@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActionIcon,
   Alert,
@@ -37,7 +37,8 @@ import {
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
-import { CallEngine, type CallPhase, type CallSettings, type CallState } from "../lib/callEngine";
+import type { CallPhase, CallSettings, CallState } from "../lib/callEngine";
+import { callSession } from "../lib/callSession";
 import type { CallConfig, DiscoveredModel } from "../types";
 import { ModelSelect } from "./ModelSelect";
 import { VoicePicker, type VoiceValue } from "./VoicePicker";
@@ -117,12 +118,13 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
   const [setupOpen, setSetupOpen] = useState(true);
   const [typed, setTyped] = useState("");
 
-  const [state, setState] = useState<CallState | null>(null);
-  const engineRef = useRef<CallEngine | null>(null);
+  // The call lives outside this component (see lib/callSession) — switching
+  // tabs must not end it. This only reads it.
+  const state = useSyncExternalStore(callSession.subscribe, callSession.getSnapshot);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   const ttsModel = models.find((m) => m.id === ttsModelId);
-  const phase = state?.phase ?? "idle";
+  const phase = state.phase;
   const inCall = phase !== "idle";
 
   useEffect(() => {
@@ -142,12 +144,13 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
       .catch((err) => setConfigError((err as Error).message));
   }, []);
 
-  // Tear the call down if the tab unmounts — a live mic must not outlive it.
-  useEffect(() => () => engineRef.current?.hangUp(), []);
-
+  // Deliberately no teardown on unmount: this panel is hidden and re-shown by
+  // React's <Activity> whenever you change tabs, and hanging up there would end
+  // the call every time you glanced at another tab. The session ends when the
+  // user says so, or when the page goes away.
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: "smooth" });
-  }, [state?.messages.length, state?.streamingText]);
+  }, [state.messages.length, state.streamingText]);
 
   const settings: CallSettings = useMemo(
     () => ({
@@ -168,7 +171,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
   );
 
   useEffect(() => {
-    engineRef.current?.updateSettings(settings);
+    callSession.updateSettings(settings);
   }, [settings]);
 
   const problems = useMemo(() => {
@@ -192,16 +195,12 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
 
   const startCall = useCallback(async () => {
     if (!config || problems.length > 0) return;
-    const engine = new CallEngine(config, settings, setState);
-    engineRef.current = engine;
     setSetupOpen(false);
-    await engine.start();
+    await callSession.start(config, settings);
   }, [config, problems.length, settings]);
 
   const hangUp = useCallback(() => {
-    engineRef.current?.hangUp();
-    engineRef.current = null;
-    setState(null);
+    callSession.end();
     setSetupOpen(true);
   }, []);
 
@@ -213,9 +212,9 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (e.code === "Space" && !e.repeat) {
         e.preventDefault();
-        engineRef.current?.pressToTalk();
+        callSession.pressToTalk();
       } else if (e.code === "Escape") {
-        engineRef.current?.interrupt();
+        callSession.interrupt();
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -223,7 +222,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
       if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
       if (e.code === "Space") {
         e.preventDefault();
-        engineRef.current?.releaseToTalk();
+        callSession.releaseToTalk();
       }
     };
     window.addEventListener("keydown", down);
@@ -408,9 +407,10 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                 level={state?.level ?? 0}
                 handsFree={handsFree}
                 onStart={startCall}
-                onInterrupt={() => engineRef.current?.interrupt()}
-                onPressToTalk={() => engineRef.current?.pressToTalk()}
-                onReleaseToTalk={() => engineRef.current?.releaseToTalk()}
+                onInterrupt={() => callSession.interrupt()}
+                onResume={() => callSession.resume()}
+                onPressToTalk={() => callSession.pressToTalk()}
+                onReleaseToTalk={() => callSession.releaseToTalk()}
                 disabled={!config || problems.length > 0}
               />
               <Text fw={600} c={PHASE_COLOR[phase]}>
@@ -421,10 +421,15 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                   {problems[0]}
                 </Text>
               )}
-              {inCall && (
+              {inCall && phase !== "error" && (
                 <Text size="xs" c="dimmed" ta="center">
                   {handsFree ? "Just talk — a pause ends your turn." : "Hold the button or Space to talk."}
                   {" · Esc interrupts."}
+                </Text>
+              )}
+              {phase === "error" && (
+                <Text size="xs" c="dimmed" ta="center">
+                  Tap the button to keep talking, or end the call.
                 </Text>
               )}
               {state?.hint && (
@@ -454,7 +459,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                       size="xs"
                       variant="light"
                       leftSection={<IconPlayerStopFilled size={14} />}
-                      onClick={() => engineRef.current?.interrupt()}
+                      onClick={() => callSession.interrupt()}
                       disabled={phase !== "speaking" && phase !== "thinking" && phase !== "preparing"}
                     >
                       Interrupt
@@ -465,7 +470,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                       size="xs"
                       variant="subtle"
                       leftSection={<IconRefresh size={14} />}
-                      onClick={() => engineRef.current?.retryLast()}
+                      onClick={() => callSession.retryLast()}
                       disabled={!state?.messages.length}
                     >
                       Redo
@@ -487,7 +492,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                       size="md"
                       variant="subtle"
                       color="gray"
-                      onClick={() => engineRef.current?.clearConversation()}
+                      onClick={() => callSession.clearConversation()}
                     >
                       <IconTrash size={16} />
                     </ActionIcon>
@@ -554,8 +559,8 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    if (typed.trim() && engineRef.current) {
-                      void engineRef.current.sendText(typed);
+                    if (typed.trim()) {
+                      callSession.sendText(typed);
                       setTyped("");
                     }
                   }
@@ -567,7 +572,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                 variant="filled"
                 disabled={!inCall || !typed.trim()}
                 onClick={() => {
-                  void engineRef.current?.sendText(typed);
+                  callSession.sendText(typed);
                   setTyped("");
                 }}
               >
@@ -629,6 +634,7 @@ function CallOrb({
   handsFree,
   onStart,
   onInterrupt,
+  onResume,
   onPressToTalk,
   onReleaseToTalk,
   disabled,
@@ -638,6 +644,7 @@ function CallOrb({
   handsFree: boolean;
   onStart: () => void;
   onInterrupt: () => void;
+  onResume: () => void;
   onPressToTalk: () => void;
   onReleaseToTalk: () => void;
   disabled: boolean;
@@ -652,8 +659,10 @@ function CallOrb({
   const handlers =
     phase === "idle"
       ? { onClick: onStart }
-      : phase === "speaking" || phase === "preparing"
-        ? { onClick: onInterrupt }
+      : phase === "error"
+        ? { onClick: onResume }
+        : phase === "speaking" || phase === "preparing"
+          ? { onClick: onInterrupt }
         : !handsFree
           ? {
               onPointerDown: onPressToTalk,

@@ -69,6 +69,19 @@ export interface CallSettings {
 
 const ASR_RATE = 16000;
 
+export const INITIAL_CALL_STATE: CallState = {
+  phase: "idle",
+  messages: [],
+  streamingText: "",
+  streamingReasoning: "",
+  speakingText: "",
+  level: 0,
+  error: null,
+  hint: null,
+  stats: {},
+  truncated: false,
+};
+
 export class CallEngine {
   private vad: MicVad | null = null;
   private player: CallPlayer;
@@ -78,22 +91,13 @@ export class CallEngine {
   private turnStartedAt = 0;
   private firstAudioSeen = false;
   private selfTriggerCount = 0;
+  /** Segments actually handed to the player this turn — what the caller heard. */
+  private spokenSoFar = "";
   /** Guards against an older re-warm landing after a newer one. */
   private warmToken = 0;
   private pendingRewarm = false;
 
-  private state: CallState = {
-    phase: "idle",
-    messages: [],
-    streamingText: "",
-    streamingReasoning: "",
-    speakingText: "",
-    level: 0,
-    error: null,
-    hint: null,
-    stats: {},
-    truncated: false,
-  };
+  private state: CallState = { ...INITIAL_CALL_STATE };
 
   constructor(
     private readonly config: CallConfig,
@@ -254,6 +258,20 @@ export class CallEngine {
     this.listen();
   }
 
+  /**
+   * Carry on after a failed turn.
+   *
+   * A turn that errors used to leave the call parked in `error` with no handler
+   * on the orb, so the only ways out were a non-obvious Redo or hanging up. A
+   * failure is usually transient (one bad segment, a model still loading) and
+   * should cost the turn, not the conversation.
+   */
+  resume(): void {
+    if (this.state.phase !== "error") return;
+    this.patch({ error: null });
+    this.listen();
+  }
+
   /** Send typed text as a turn — the same path, minus the microphone. */
   async sendText(text: string): Promise<void> {
     const trimmed = text.trim();
@@ -347,6 +365,7 @@ export class CallEngine {
     const signal = this.abort.signal;
     this.turnStartedAt = Date.now();
     this.firstAudioSeen = false;
+    this.spokenSoFar = "";
     this.armFiller();
 
     // Segments are synthesised one at a time and in order: the model serializes
@@ -368,6 +387,9 @@ export class CallEngine {
             signal,
           );
           if (signal.aborted) return;
+          // Counted as spoken once its audio is queued: if the turn is cut off
+          // here, this is the part the caller actually heard.
+          this.spokenSoFar = this.spokenSoFar ? `${this.spokenSoFar} ${text}` : text;
           await this.player.enqueueStream(res);
         } catch (err) {
           if (signal.aborted) return;
@@ -456,12 +478,37 @@ export class CallEngine {
     this.fillerTimer = null;
   }
 
+  /**
+   * Abort the turn in flight, and leave the conversation coherent.
+   *
+   * The user's message is appended when the turn starts, the assistant's only on
+   * `done`. Cancelling in between used to leave a user turn that was never
+   * answered — so the next turn sent two user messages in a row, and whatever
+   * the assistant had already *said out loud* was missing from its own context,
+   * which made it cheerfully repeat itself. Keep what was spoken; drop the
+   * question if nothing was.
+   */
   private cancelTurn(): void {
+    const wasAnswering = this.abort !== null;
     this.abort?.abort();
     this.abort = null;
     this.clearFiller();
     this.player.stop();
-    this.patch({ speakingText: "", streamingReasoning: "" });
+
+    const patch: Partial<CallState> = { speakingText: "", streamingReasoning: "", streamingText: "" };
+    if (wasAnswering) {
+      const messages = [...this.state.messages];
+      const last = messages[messages.length - 1];
+      // `done` already landed (the assistant message is in) — nothing to repair.
+      if (last?.role === "user") {
+        const spoken = this.spokenSoFar.trim();
+        if (spoken) messages.push({ role: "assistant", content: spoken });
+        else messages.pop();
+        patch.messages = messages;
+      }
+    }
+    this.spokenSoFar = "";
+    this.patch(patch);
   }
 
   private patch(patch: Partial<CallState>): void {
