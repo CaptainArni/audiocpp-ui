@@ -1,6 +1,6 @@
 # audio.cpp Studio
 
-A local **desktop app** (and browser app) for [audio.cpp](https://github.com/0xShug0/audio.cpp): generate **TTS**, **clone a voice** from an uploaded clip **or a live mic recording**, **transcribe** audio (ASR), run **page-photo OCR**, keep a **library of readings**, and **start/stop** the inference server — from a native window or your browser. It's also the backend for the [Android companion app](https://github.com/CaptainArni/audiocpp-android).
+A local **desktop app** (and browser app) for [audio.cpp](https://github.com/0xShug0/audio.cpp): generate **TTS**, **clone a voice** from an uploaded clip **or a live mic recording**, **transcribe** audio, video or the microphone (ASR), run **page-photo OCR**, keep a **library of readings**, and **start/stop** the inference server — from a native window or your browser. It's also the backend for the [Android companion app](https://github.com/CaptainArni/audiocpp-android).
 
 ![audio.cpp Studio — Text to Speech tab](docs/screenshot-studio.png)
 
@@ -67,7 +67,9 @@ From a terminal:
 .\.venv\Scripts\python backend\browser_app.py
 ```
 
-Both serve at `http://127.0.0.1:8110`. Tabs: **Text to Speech**, **Transcribe**, **Saved Voices**, **Library**, **OCR**, **Telemetry**. Click **Start** to launch the inference server.
+Both serve at `http://127.0.0.1:8110`. Tabs: **Text to Speech**, **Transcribe**, **Call**, **Saved Voices**, **Library**, **OCR**, **Telemetry**. Click **Start** to launch the inference server.
+
+For video transcription, `ffmpeg` must be on `PATH` (or set `[media].ffmpeg` in `config.toml`). Everything else works without it.
 
 ## Dev workflow (hot reload)
 
@@ -109,6 +111,20 @@ id = "paddleocr-vl-1-6-gguf"
 label = "PaddleOCR-VL 1.6"
 model = "paddleocr-vl-1-6-gguf"
 prompt = "OCR:"
+
+[call]                       # the Call tab. Chat models are NOT listed here —
+                             # they are discovered from llama.cpp's /v1/models.
+default_chat_model = "gemma-4-e4b-it"
+default_tts_model = "VoxCPM2"
+default_asr_model = "Nemotron-3.5-ASR-Streaming-0.6B-GGUF"
+thinking_tokens = 900        # extra budget when thinking is on (it shares max_tokens)
+system_prompt = """…answer in spoken language, no markdown…"""
+
+[[call.length]]              # one per response-length preset
+id = "brief"
+label = "Kurz"
+max_tokens = 140
+instruction = "Fasse dich sehr kurz: ein bis zwei Sätze."
 ```
 
 Copy `config.example.toml` → `config.toml` and edit `[audiocpp].exe`/`models_dir` and the OCR profiles for your machine. `config.toml` is gitignored; a `data/config.toml` (also gitignored) **overrides** the root file if present.
@@ -117,8 +133,15 @@ Optional icons: drop `icon_small.png` + `icon_large.png` in `backend/icons/` to 
 
 ## Notes / limitations
 
-- Reference and ASR **file uploads** are **WAV** only; the **Record mic** option converts to WAV automatically. In the desktop window the app auto-allows the microphone; in the browser you get the normal one-time prompt.
-- `audiocpp_server` is **CUDA-only** and runs models **offline** (no streaming); requests are one-shot. Lazy-loaded models stay in VRAM until you **Stop** the server (or close the app).
+- **Call** is a spoken conversation: talk into the mic, a `llama.cpp` model answers, and the answer is read back in the voice you picked (including a cloned one). Pick the chat model from a dropdown — the list is discovered from the `llama.cpp` server, so whatever it can serve shows up. **Thinking** is a switch (its reasoning is displayed but never spoken), and **response length** is a preset that sets both a token cap and the instruction that makes the answer actually end there.
+  - Two models make it feel live: a **streaming-capable TTS** (VoxCPM2 — starts speaking while still generating) and a **streaming ASR** (`Nemotron-3.5-ASR-Streaming-0.6B-GGUF`, install with `python tools/model_manager_v2.py install nemotron_asr_q8_0`). Measured end to end: ~1.2 s from the end of your sentence to the first spoken word. Non-streaming models still work, just a second or two slower.
+  - **Start call** warms all three models first (lazy loading makes the first request to each pay a full VRAM load) — that is why the first turn is not slow.
+  - Hands-free by default; a pause ends your turn. Hold **Space** for push-to-talk instead, **Esc** interrupts. Letting the assistant be interrupted by your voice is opt-in and wants headphones — over speakers it can hear itself.
+- **Transcribe** can also **read the transcript back in any voice** (including a cloned one) once it has one — a model + voice picker and a chunked player sit under the result, so a recording can be replayed in a different voice without first saving it as a reading.
+- **Transcribe** takes an audio file, a **video file** (its audio track is extracted on the PC with `ffmpeg`), or a **live mic recording**. Everything is converted to 16 kHz mono WAV — audio in the browser, video by the backend. Without `ffmpeg` on `PATH` (or `[media].ffmpeg` set) only WAV and browser-decodable audio work; the tab says so. Long media is capped by `[media].max_duration_sec` (1 h) since ASR is a single non-streaming request.
+- In the desktop window the app auto-allows the microphone; in the browser you get the normal one-time prompt.
+- `backend/uploads/` is scratch and is pruned after `[media].uploads_retention_hours` (24 h) — extracted audio is ~115 MB per hour.
+- `audiocpp_server` is **CUDA-only**. Most models run **offline** (one-shot requests); models the catalog marks `streaming` (VoxCPM2, Nemotron ASR) are registered `mode: "streaming"` and can additionally emit audio/transcript chunks as they are produced — they still answer ordinary requests unchanged, so this costs no extra VRAM. Lazy-loaded models stay in VRAM until you **Stop** the server (or close the app). Changing which models stream needs a server restart.
 - **OCR** requires a separate `llama.cpp` server (it is *not* launched by Studio). The **OCR** tab is a test bench to compare models/prompts on a dropped image.
 - This is a **local, unauthenticated LAN tool** — do not expose the port beyond your own network. Generated audio, uploads, saved voices, and readings live under `backend/` and are **not** committed (see `.gitignore`).
 

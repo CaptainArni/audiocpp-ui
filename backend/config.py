@@ -207,6 +207,152 @@ class AppConfig:
                 return m
         return models[0]
 
+    # --- Voice call (Call tab: mic -> ASR -> llama.cpp chat -> TTS) ---
+    # Chat models are *discovered* from the llama.cpp server's /v1/models rather
+    # than declared here (unlike the OCR profiles): llama-swap already knows every
+    # model it can serve, so a hand-written list would only go stale. What config
+    # owns is the parts llama.cpp cannot tell us — the spoken-conversation system
+    # prompt, the length presets, and the turn-taking defaults.
+    @property
+    def _call(self) -> dict[str, Any]:
+        return self._data.get("call", {})
+
+    @property
+    def call_system_prompt(self) -> str:
+        return self._call.get("system_prompt", "").strip()
+
+    @property
+    def call_default_chat_model(self) -> str:
+        return self._call.get("default_chat_model", "")
+
+    @property
+    def call_default_tts_model(self) -> str:
+        return self._call.get("default_tts_model", "")
+
+    @property
+    def call_default_asr_model(self) -> str:
+        return self._call.get("default_asr_model", "")
+
+    @property
+    def call_temperature(self) -> float:
+        return float(self._call.get("temperature", 0.7))
+
+    @property
+    def call_top_p(self) -> float:
+        return float(self._call.get("top_p", 0.95))
+
+    @property
+    def call_thinking_tokens(self) -> int:
+        """Extra token budget granted when thinking is on.
+
+        Reasoning is spent from the same max_tokens as the answer, so a short
+        preset plus thinking means the model reasons until the cap and never
+        answers at all (measured: ~340 tokens of which ~1200 characters were
+        reasoning, against a "Kurz" budget of 140). Adding a separate allowance
+        is what keeps the thinking switch usable at every response length.
+        """
+        return int(self._call.get("thinking_tokens", 900))
+
+    @property
+    def call_context_messages(self) -> int:
+        """How many prior turns to resend; the system prompt is always kept."""
+        return int(self._call.get("context_messages", 20))
+
+    @property
+    def call_timeout_sec(self) -> float:
+        return float(self._call.get("timeout_sec", 300))
+
+    @property
+    def call_vad_hangover_ms(self) -> int:
+        return int(self._call.get("vad_hangover_ms", 700))
+
+    @property
+    def call_vad_preroll_ms(self) -> int:
+        return int(self._call.get("vad_preroll_ms", 300))
+
+    @property
+    def call_filler_after_ms(self) -> int:
+        """Play the cached filler clip if nothing has been spoken this long. 0 = off."""
+        return int(self._call.get("filler_after_ms", 1500))
+
+    @property
+    def call_filler_text(self) -> str:
+        return self._call.get("filler_text", "Moment…")
+
+    @property
+    def call_lengths(self) -> list[dict[str, Any]]:
+        """Response-length presets. max_tokens alone truncates mid-word, so each
+        preset also carries the instruction that tells the model to be that long."""
+        raw = self._call.get("length", [])
+        out: list[dict[str, Any]] = []
+        for e in raw:
+            lid = e.get("id")
+            if not lid:
+                continue
+            out.append(
+                {
+                    "id": lid,
+                    "label": e.get("label", lid),
+                    "max_tokens": int(e.get("max_tokens", 400)),
+                    "instruction": e.get("instruction", ""),
+                }
+            )
+        return out
+
+    @property
+    def call_default_length(self) -> str:
+        ids = [x["id"] for x in self.call_lengths]
+        explicit = self._call.get("default_length", "")
+        if explicit and explicit in ids:
+            return explicit
+        return ids[0] if ids else ""
+
+    def call_length_by_id(self, length_id: str | None) -> dict[str, Any] | None:
+        lengths = self.call_lengths
+        if not lengths:
+            return None
+        if length_id:
+            for x in lengths:
+                if x["id"] == length_id:
+                    return x
+        default_id = self.call_default_length
+        for x in lengths:
+            if x["id"] == default_id:
+                return x
+        return lengths[0]
+
+    # --- Media conversion (ffmpeg; audio/video uploads -> WAV) ---
+    @property
+    def media_ffmpeg(self) -> str:
+        """Explicit ffmpeg path; blank means resolve "ffmpeg" from PATH."""
+        return self._data.get("media", {}).get("ffmpeg", "")
+
+    @property
+    def media_ffprobe(self) -> str:
+        return self._data.get("media", {}).get("ffprobe", "")
+
+    @property
+    def media_max_duration_sec(self) -> float:
+        return float(self._data.get("media", {}).get("max_duration_sec", 3600))
+
+    @property
+    def media_max_upload_mb(self) -> int:
+        return int(self._data.get("media", {}).get("max_upload_mb", 2048))
+
+    @property
+    def media_convert_timeout_sec(self) -> float:
+        return float(self._data.get("media", {}).get("convert_timeout_sec", 1800))
+
+    @property
+    def media_uploads_retention_hours(self) -> float:
+        """Age at which uploads are pruned; 0 disables pruning."""
+        return float(self._data.get("media", {}).get("uploads_retention_hours", 24))
+
+    @property
+    def media_asr_timeout_sec(self) -> float:
+        """How long to wait on the audio server for one transcription."""
+        return float(self._data.get("media", {}).get("asr_timeout_sec", 900))
+
     # --- Paths (all relative to backend/) ---
     @property
     def backend_dir(self) -> Path:

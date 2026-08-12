@@ -1,40 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  ActionIcon,
-  Alert,
-  Button,
-  Group,
-  SegmentedControl,
-  Select,
-  Stack,
-  Text,
-  TextInput,
-  Textarea,
-  Tooltip,
-} from "@mantine/core";
-import { Dropzone } from "@mantine/dropzone";
-import {
-  IconDeviceFloppy,
-  IconFileMusic,
-  IconMicrophone,
-  IconTrash,
-  IconUpload,
-  IconUser,
-  IconX,
-} from "@tabler/icons-react";
-import { notifications } from "@mantine/notifications";
+import { Alert, SegmentedControl, Select, Stack } from "@mantine/core";
+import { IconInfoCircle, IconMicrophone, IconUser } from "@tabler/icons-react";
 import { api } from "../api";
-import { fileToWavUpload } from "../lib/wav";
-import { sampleTexts } from "../lib/sampleTexts";
-import { MicRecorder } from "./MicRecorder";
 import type { DiscoveredModel, SavedVoice } from "../types";
 
+/**
+ * Which voice to speak with.
+ *
+ * `clone` means "a voice saved in the Saved Voices tab". Creating one from a
+ * clip is *not* part of this picker: it lives in that tab, along with previewing
+ * and deleting. Everywhere else a voice is only ever chosen, never managed —
+ * five panels each offering upload/record/delete was five copies of one job, and
+ * put a destructive button next to a dropdown people use constantly.
+ */
 export interface VoiceValue {
   mode: "builtin" | "clone";
   voiceId?: string | null;
-  upload?: { uploadId: string; name: string } | null;
   savedVoiceId?: string | null;
-  referenceText?: string;
 }
 
 interface Props {
@@ -43,37 +25,31 @@ interface Props {
   onChange: (v: VoiceValue) => void;
 }
 
-type CloneSource = "saved" | "upload" | "record";
-
 export function VoicePicker({ model, value, onChange }: Props) {
-  const [uploading, setUploading] = useState(false);
-  const [cloneSource, setCloneSource] = useState<CloneSource>("upload");
   const [voices, setVoices] = useState<SavedVoice[]>([]);
-  const [voiceName, setVoiceName] = useState("");
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api
-      .getVoices()
-      .then((vs) => {
-        setVoices(vs);
-        if (vs.length > 0) setCloneSource("saved");
-      })
-      .catch(() => {});
+    api.getVoices().then(setVoices).catch(() => {});
   }, []);
-
-  // Surface the saved-voice dropdown when one is restored externally (e.g. a
-  // remembered voice preserved across a model switch).
-  useEffect(() => {
-    if (value.mode === "clone" && value.savedVoiceId) setCloneSource("saved");
-  }, [value.savedVoiceId, value.mode]);
 
   const modes = useMemo(() => {
     const list: { label: string; value: string }[] = [];
     if (model && model.builtinVoices.length > 0) list.push({ label: "Built-in voice", value: "builtin" });
-    if (model?.clone) list.push({ label: "Clone from clip", value: "clone" });
+    if (model?.clone) list.push({ label: "Saved voice", value: "clone" });
     return list;
   }, [model]);
+
+  // Snap to a mode this model actually offers. A clone-only model (Higgs has no
+  // built-in voices) left on "builtin" renders an empty voice dropdown with the
+  // mode switch showing no selection — a dead end the user cannot click out of.
+  const modeValues = modes.map((m) => m.value).join("|");
+  useEffect(() => {
+    if (modes.length === 0) return;
+    if (!modes.some((m) => m.value === value.mode)) {
+      onChange({ ...value, mode: modes[0].value as VoiceValue["mode"] });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeValues, value.mode]);
 
   if (!model) return null;
 
@@ -85,72 +61,16 @@ export function VoicePicker({ model, value, onChange }: Props) {
     );
   }
 
-  const savedVoice = voices.find((v) => v.id === value.savedVoiceId) ?? null;
-
-  async function onDrop(files: File[]) {
-    const file = files[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const res = await api.upload(await fileToWavUpload(file));
-      onChange({
-        ...value,
-        mode: "clone",
-        upload: { uploadId: res.uploadId, name: res.originalName },
-        savedVoiceId: null,
-      });
-      notifications.show({ color: "teal", message: `Reference clip uploaded: ${res.originalName}` });
-    } catch (err) {
-      notifications.show({ color: "red", title: "Upload failed", message: (err as Error).message });
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function saveVoice() {
-    if (!value.upload) return;
-    const name = voiceName.trim();
-    if (!name) {
-      notifications.show({ color: "yellow", message: "Give the voice a name first." });
-      return;
-    }
-    setSaving(true);
-    try {
-      const res = await api.saveVoice({
-        uploadId: value.upload.uploadId,
-        name,
-        referenceText: value.referenceText || undefined,
-      });
-      const vs = await api.getVoices();
-      setVoices(vs);
-      setVoiceName("");
-      setCloneSource("saved");
-      onChange({ ...value, mode: "clone", savedVoiceId: res.id, upload: null });
-      notifications.show({ color: "teal", message: `Voice "${name}" saved.` });
-    } catch (err) {
-      notifications.show({ color: "red", title: "Saving voice failed", message: (err as Error).message });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function deleteVoice(id: string) {
-    try {
-      await api.deleteVoice(id);
-      setVoices((vs) => vs.filter((v) => v.id !== id));
-      if (value.savedVoiceId === id) onChange({ ...value, savedVoiceId: null });
-    } catch (err) {
-      notifications.show({ color: "red", title: "Delete failed", message: (err as Error).message });
-    }
-  }
-
   return (
-    <Stack gap="sm">
-      <SegmentedControl
-        data={modes}
-        value={value.mode}
-        onChange={(mode) => onChange({ ...value, mode: mode as VoiceValue["mode"] })}
-      />
+    <Stack gap="xs">
+      {/* One mode is not a choice — don't render a switch with a single option. */}
+      {modes.length > 1 && (
+        <SegmentedControl
+          data={modes}
+          value={value.mode}
+          onChange={(mode) => onChange({ ...value, mode: mode as VoiceValue["mode"] })}
+        />
+      )}
 
       {value.mode === "builtin" && (
         <Select
@@ -164,162 +84,25 @@ export function VoicePicker({ model, value, onChange }: Props) {
         />
       )}
 
-      {value.mode === "clone" && (
-        <Stack gap="xs">
-          <SegmentedControl
-            size="xs"
-            data={[
-              { label: `Saved voices (${voices.length})`, value: "saved" },
-              { label: "Upload clip", value: "upload" },
-              { label: "Record mic", value: "record" },
-            ]}
-            value={cloneSource}
-            onChange={(v) => {
-              const source = v as CloneSource;
-              setCloneSource(source);
-              // Saved voice and ad-hoc clip are mutually exclusive references.
-              if (source === "saved") {
-                // Refresh in case voices were added/removed in the Saved Voices tab.
-                api.getVoices().then(setVoices).catch(() => {});
-                onChange({ ...value, upload: null });
-              } else {
-                onChange({ ...value, savedVoiceId: null });
-              }
-            }}
+      {value.mode === "clone" &&
+        (voices.length === 0 ? (
+          <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
+            No saved voices yet — record or upload one in the <b>Saved Voices</b> tab, then pick it here.
+          </Alert>
+        ) : (
+          <Select
+            label="Saved voice"
+            placeholder="Select a saved voice"
+            searchable
+            data={voices.map((v) => ({
+              value: v.id,
+              label: v.durationSec != null ? `${v.name} · ${v.durationSec.toFixed(1)}s` : v.name,
+            }))}
+            value={value.savedVoiceId ?? null}
+            onChange={(id) => onChange({ ...value, savedVoiceId: id })}
+            leftSection={<IconUser size={16} />}
           />
-
-          {cloneSource === "saved" && (
-            <Stack gap="xs">
-              {voices.length === 0 ? (
-                <Alert color="gray" variant="light">
-                  No saved voices yet. Upload or record a clip, add its transcript, and click "Save voice" to reuse
-                  it here.
-                </Alert>
-              ) : (
-                <Group align="end" gap="xs" wrap="nowrap">
-                  <Select
-                    style={{ flex: 1 }}
-                    label="Saved voice"
-                    placeholder="Select a saved voice"
-                    searchable
-                    leftSection={<IconUser size={16} />}
-                    data={voices.map((v) => ({
-                      value: v.id,
-                      label: v.durationSec ? `${v.name} · ${v.durationSec.toFixed(1)}s` : v.name,
-                    }))}
-                    value={value.savedVoiceId ?? null}
-                    onChange={(v) => onChange({ ...value, savedVoiceId: v, upload: null })}
-                    onDropdownOpen={() => api.getVoices().then(setVoices).catch(() => {})}
-                  />
-                  {savedVoice && (
-                    <Tooltip label={`Delete "${savedVoice.name}"`}>
-                      <ActionIcon variant="light" color="red" size="lg" mb={1} onClick={() => deleteVoice(savedVoice.id)}>
-                        <IconTrash size={18} />
-                      </ActionIcon>
-                    </Tooltip>
-                  )}
-                </Group>
-              )}
-              {savedVoice && (
-                <>
-                  <audio controls src={api.voiceAudioUrl(savedVoice.id)} style={{ width: "100%", height: 36 }} />
-                  {savedVoice.referenceText && (
-                    <Text size="xs" c="dimmed" lineClamp={3}>
-                      Transcript: {savedVoice.referenceText}
-                    </Text>
-                  )}
-                </>
-              )}
-            </Stack>
-          )}
-
-          {cloneSource === "upload" && (
-            <Dropzone
-              onDrop={onDrop}
-              loading={uploading}
-              accept={["audio/*", "video/webm"]}
-              maxFiles={1}
-              multiple={false}
-            >
-              <Group justify="center" gap="md" mih={90} style={{ pointerEvents: "none" }}>
-                <Dropzone.Accept>
-                  <IconUpload size={40} />
-                </Dropzone.Accept>
-                <Dropzone.Reject>
-                  <IconX size={40} />
-                </Dropzone.Reject>
-                <Dropzone.Idle>
-                  <IconFileMusic size={40} />
-                </Dropzone.Idle>
-                <div>
-                  <Text size="sm">Drop a reference clip here, or click to browse</Text>
-                  <Text size="xs" c="dimmed">
-                    A few seconds of clean speech works best — WAV, MP3, WebM, OGG, M4A, FLAC (converted to WAV in the browser)
-                  </Text>
-                </div>
-              </Group>
-            </Dropzone>
-          )}
-
-          {cloneSource === "record" && (
-            <Stack gap="xs">
-              <Select
-                label="Sample passage"
-                description="Pick a passage to read aloud — it fills the reference transcript below"
-                placeholder="Choose a passage (optional)"
-                clearable
-                data={sampleTexts.map((s) => ({ value: s.label, label: s.label }))}
-                value={sampleTexts.find((s) => s.text === value.referenceText)?.label ?? null}
-                onChange={(label) => {
-                  const s = sampleTexts.find((x) => x.label === label);
-                  onChange({ ...value, referenceText: s ? s.text : "" });
-                }}
-              />
-              <MicRecorder
-                prompt={value.referenceText}
-                onUploaded={(upload) => onChange({ ...value, mode: "clone", upload, savedVoiceId: null })}
-              />
-            </Stack>
-          )}
-
-          {cloneSource !== "saved" && (
-            <>
-              {value.upload && (
-                <Text size="sm" c="teal">
-                  Using reference: {value.upload.name}
-                </Text>
-              )}
-              <Textarea
-                label="Reference transcript (optional)"
-                description="What the reference clip says — some models clone better with this"
-                autosize
-                minRows={1}
-                value={value.referenceText ?? ""}
-                onChange={(e) => onChange({ ...value, referenceText: e.currentTarget.value })}
-              />
-              {value.upload && (
-                <Group align="end" gap="xs">
-                  <TextInput
-                    style={{ flex: 1 }}
-                    label="Save this voice for reuse"
-                    placeholder="Voice name, e.g. Arnold (german)"
-                    value={voiceName}
-                    onChange={(e) => setVoiceName(e.currentTarget.value)}
-                  />
-                  <Button
-                    variant="light"
-                    leftSection={<IconDeviceFloppy size={16} />}
-                    onClick={saveVoice}
-                    loading={saving}
-                  >
-                    Save voice
-                  </Button>
-                </Group>
-              )}
-            </>
-          )}
-        </Stack>
-      )}
+        ))}
     </Stack>
   );
 }

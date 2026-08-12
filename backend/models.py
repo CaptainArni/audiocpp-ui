@@ -117,6 +117,7 @@ def scan_models() -> list[dict]:
         def make(model_id: str, langs: list[str], vs: list[str], load: "dict | None", session: "dict | None") -> dict:
             session = {**(session or {}), **extra_session} or None
             return {
+                "defaultRequestOptions": (cat.default_request_options or None) if cat else None,
                 "id": model_id,
                 "dir": entry.name,
                 "path": str(entry.resolve()),
@@ -125,6 +126,7 @@ def scan_models() -> list[dict]:
                 "task": cat.task if cat else None,
                 "clone": cat.clone if cat else False,
                 "voiceDesign": cat.voice_design if cat else False,
+                "streaming": cat.streaming if cat else False,
                 "languages": langs,
                 "builtinVoices": vs,
                 "loadOptions": load,

@@ -7,6 +7,7 @@ clips, and proxies TTS/ASR requests to the running audiocpp_server.
 """
 
 import asyncio
+import base64
 import io
 import json
 import mimetypes
@@ -22,13 +23,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import chat
+import media
+from catalog import lookup_catalog
 from config import AppConfig
 from logbus import log_bus
 from metrics import metrics
 from models import scan_models
 from ocr import OCR_PROMPT, transcribe_image
 from process import server_manager
-from proxy import AudiocppError, registered_models, speech, transcribe
+from proxy import (
+    STREAM_SAMPLE_RATE,
+    AudiocppError,
+    registered_models,
+    speech,
+    speech_stream,
+    transcribe,
+)
 
 # Windows serves .js as text/plain by default, which breaks ES module loading.
 mimetypes.add_type("application/javascript", ".js")
@@ -63,6 +74,11 @@ async def lifespan(_app: FastAPI):
     # lines into the SSE queues via this loop.
     log_bus.set_loop(asyncio.get_running_loop())
     log_bus.emit("info", "audio.cpp Studio backend ready")
+    if media.ffmpeg_path():
+        log_bus.emit("debug", f"ffmpeg available · {media.ffmpeg_version()}")
+    else:
+        log_bus.emit("warn", "ffmpeg not found — uploads are limited to .wav (see [media] in config.toml)")
+    media.prune_uploads()
     if cfg.audiocpp_autostart:
         threading.Thread(target=_autostart_server, daemon=True).start()
     yield
@@ -125,6 +141,16 @@ def _wav_duration(data: bytes) -> "float | None":
     """Duration in seconds of a WAV byte string, or None if it can't be read."""
     try:
         with wave.open(io.BytesIO(data), "rb") as w:
+            rate = w.getframerate()
+            return w.getnframes() / rate if rate else None
+    except Exception:
+        return None
+
+
+def _wav_duration_of(path: Path) -> "float | None":
+    """Duration of a WAV on disk, without reading it into memory (they get big)."""
+    try:
+        with wave.open(str(path), "rb") as w:
             rate = w.getframerate()
             return w.getnframes() / rate if rate else None
     except Exception:
@@ -235,18 +261,104 @@ async def api_telemetry():
     return {"server": server_manager.status(), "metrics": metrics.snapshot()}
 
 
-# --- uploads (reference clips / ASR audio) ---------------------------------
+# --- uploads (reference clips / ASR audio / video) -------------------------
+async def _spool(file: UploadFile, dest: Path) -> int:
+    """Stream an upload to disk in chunks, enforcing [media].max_upload_mb.
+
+    Deliberately not `await file.read()`: a video is uploaded whole (only its
+    audio survives the conversion) and must never be held in memory.
+    """
+    limit = cfg.media_max_upload_mb * 1024 * 1024
+    written = 0
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > limit:
+                out.close()
+                dest.unlink(missing_ok=True)
+                raise ValueError(f"file is larger than the {cfg.media_max_upload_mb} MB upload limit")
+            out.write(chunk)
+    return written
+
+
 @app.post("/api/uploads")
-async def api_upload(file: UploadFile = File(...)):
+async def api_upload(file: UploadFile = File(...), rate: int | None = Form(None)):
+    """Accept any audio or video file; store it as a WAV and return its id.
+
+    A .wav with no explicit `rate` is stored untouched (the reference-clip path).
+    Anything else — mp3, m4a, a phone recording, a whole .mkv — is probed and
+    transcoded by ffmpeg to mono 16-bit PCM at `rate` (ASR callers ask for 16000,
+    which is what the server's VAD chunking expects).
+    """
     orig = file.filename or "upload.wav"
-    if not orig.lower().endswith(".wav"):
-        log_bus.emit("warn", f"upload rejected (not a .wav): {orig}")
-        return JSONResponse(status_code=400, content={"error": "only .wav files are supported in this version"})
+    suffix = Path(orig).suffix.lower()[:12] or ".bin"
+    is_wav = suffix == ".wav"
+
+    # Passthrough: a WAV that nobody asked us to resample is already the target
+    # format, so it costs nothing and needs no ffmpeg.
+    if is_wav and not rate:
+        upload_id = f"{uuid.uuid4().hex}.wav"
+        dest = cfg.uploads_dir / upload_id
+        try:
+            size = await _spool(file, dest)
+        except ValueError as e:
+            return _fail(e)
+        log_bus.emit("info", f"upload saved · {orig} → {upload_id} ({size // 1024} KB)")
+        media.prune_uploads()
+        return {
+            "uploadId": upload_id,
+            "path": str(dest.resolve()),
+            "originalName": orig,
+            "durationSec": _wav_duration_of(dest),
+            "converted": False,
+            "sourceKind": "wav",
+        }
+
+    staged = cfg.uploads_dir / f"{uuid.uuid4().hex}.src{suffix}"
     upload_id = f"{uuid.uuid4().hex}.wav"
-    data = await file.read()
-    (cfg.uploads_dir / upload_id).write_bytes(data)
-    log_bus.emit("info", f"upload saved · {orig} → {upload_id} ({len(data) // 1024} KB)")
-    return {"uploadId": upload_id, "path": str((cfg.uploads_dir / upload_id).resolve()), "originalName": orig}
+    dest = cfg.uploads_dir / upload_id
+    try:
+        size = await _spool(file, staged)
+        info = media.probe(staged)
+        if not info["hasAudio"]:
+            raise ValueError(f'"{orig}" has no audio track')
+        duration = info["durationSec"]
+        if duration and duration > cfg.media_max_duration_sec:
+            fmt = lambda s: f"{s / 60:.0f} min" if s >= 60 else f"{s:.0f}s"  # noqa: E731
+            raise ValueError(
+                f"{orig} is {fmt(duration)} long, over the {fmt(cfg.media_max_duration_sec)} "
+                f"limit ([media].max_duration_sec)"
+            )
+        kind = "video" if info["hasVideo"] else "audio"
+        log_bus.emit(
+            "info",
+            f"upload · {orig} ({size // 1024} KB, {kind}/{info['format']}"
+            f"{f', {duration:.1f}s' if duration else ''}) → extracting audio",
+        )
+        media.to_wav(staged, dest, rate=rate or 16000)
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        log_bus.emit("warn", f"upload rejected · {orig}: {e}")
+        return _fail(e)
+    finally:
+        staged.unlink(missing_ok=True)
+
+    media.prune_uploads()
+    return {
+        "uploadId": upload_id,
+        "path": str(dest.resolve()),
+        "originalName": orig,
+        "durationSec": _wav_duration_of(dest),
+        "converted": True,
+        "sourceKind": kind,
+    }
+
+
+@app.get("/api/media/support")
+async def api_media_support():
+    """Whether ffmpeg is available, and the upload limits — so the clients can
+    offer (or explain away) the video/audio file picker before anything is sent."""
+    return media.support()
 
 
 @app.get("/api/uploads/{upload_id}/audio")
@@ -363,38 +475,63 @@ async def api_voice_audio(voice_id: str):
 
 
 # --- TTS / cloning ---------------------------------------------------------
+def _speech_request(body: dict) -> "tuple[dict, int | None]":
+    """Build the upstream /v1/audio/speech body from an /api/tts-shaped payload.
+
+    Shared with /api/call/speak so a call resolves voices — built-in, saved clone,
+    freshly uploaded clip — exactly like the TTS panel does. Returns the request
+    and the auto-derived token budget (None when the caller set max_tokens).
+    """
+    model = body.get("model")
+    text = body.get("text")
+    if not model:
+        raise ValueError("model is required")
+    if not text or not str(text).strip():
+        raise ValueError("text is required")
+
+    req: dict = {"model": model, "input": text, "response_format": "wav"}
+    if body.get("language"):
+        req["language"] = body["language"]
+    if body.get("voiceId"):
+        req["voice"] = body["voiceId"]
+    if body.get("savedVoiceId"):
+        saved = _load_voice(body["savedVoiceId"])
+        req["voice_ref"] = saved["path"]
+        if saved.get("referenceText"):
+            req["reference_text"] = saved["referenceText"]
+    elif body.get("uploadId"):
+        req["voice_ref"] = _upload_path(body["uploadId"])
+    if body.get("referenceText"):
+        req["reference_text"] = body["referenceText"]
+    if body.get("instructions"):
+        req["instructions"] = body["instructions"]
+    params = body.get("params")
+    if isinstance(params, dict):
+        for k, v in params.items():
+            if v is not None and v != "":
+                req[k] = v
+
+    # Size the AR token budget to the text so a run-away generation (one
+    # that never emits its stop token) fails in seconds instead of running
+    # to the model-wide ceiling in server.json. An explicit max_tokens from
+    # the params panel always wins.
+    budget = None
+    if "max_tokens" not in req:
+        entry = lookup_catalog(str(model).split("@", 1)[0])
+        if entry is not None and entry.token_budget is not None:
+            budget = entry.token_budget.for_text(len(str(text)))
+            req["max_tokens"] = budget
+    return req, budget
+
+
 @app.post("/api/tts")
 async def api_tts(request: Request):
     try:
         body = await request.json()
         model = body.get("model")
         text = body.get("text")
-        if not model:
-            raise ValueError("model is required")
-        if not text or not str(text).strip():
-            raise ValueError("text is required")
-
-        req: dict = {"model": model, "input": text, "response_format": "wav"}
-        if body.get("language"):
-            req["language"] = body["language"]
-        if body.get("voiceId"):
-            req["voice"] = body["voiceId"]
-        if body.get("savedVoiceId"):
-            saved = _load_voice(body["savedVoiceId"])
-            req["voice_ref"] = saved["path"]
-            if saved.get("referenceText"):
-                req["reference_text"] = saved["referenceText"]
-        elif body.get("uploadId"):
-            req["voice_ref"] = _upload_path(body["uploadId"])
-        if body.get("referenceText"):
-            req["reference_text"] = body["referenceText"]
-        if body.get("instructions"):
-            req["instructions"] = body["instructions"]
+        req, budget = _speech_request(body)
         params = body.get("params")
-        if isinstance(params, dict):
-            for k, v in params.items():
-                if v is not None and v != "":
-                    req[k] = v
 
         summary = [f"model={model}"]
         if body.get("voiceId"):
@@ -412,6 +549,8 @@ async def api_tts(request: Request):
             if extra:
                 summary.append("params=" + ",".join(extra))
         summary.append(f"text={len(str(text))} chars")
+        if budget is not None:
+            summary.append(f"max_tokens={budget} (auto)")
         log_bus.emit("info", "TTS request · " + " · ".join(summary))
 
         t0 = time.perf_counter()
@@ -492,6 +631,310 @@ async def api_transcribe(request: Request):
     except Exception as e:
         log_bus.emit("error", f"ASR failed: {e}")
         return _fail(e)
+
+
+# --- voice call (mic -> ASR -> llama.cpp chat -> streamed TTS) --------------
+def _model_streams(model_id: str) -> bool:
+    """Whether this model was registered `mode: "streaming"` (see serverjson.py)."""
+    entry = lookup_catalog(str(model_id).split("@", 1)[0])
+    return bool(entry and entry.streaming)
+
+
+# A streaming ASR session consumes audio in fixed windows ("preferred chunk size
+# is one second at the model sample rate") and discards whatever is left over at
+# the end. Measured on Nemotron: a 4.6 s turn ending "…und ein paar Eier da"
+# transcribed as "…und ein paar" — the last words silently gone, which in a
+# conversation means the model answers a question it never heard in full. One
+# second of trailing silence flushes that final window. Offline models don't
+# need it and don't care (at RTF 0.03 it costs ~30 ms), so it is unconditional
+# rather than conditional on a model flag nobody will remember to set.
+_ASR_TAIL_PAD_SEC = 1.0
+
+
+def _pad_wav_tail(path: Path, seconds: float = _ASR_TAIL_PAD_SEC) -> None:
+    """Append silence to a mono 16-bit WAV in place."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            params = w.getparams()
+            frames = w.readframes(w.getnframes())
+        pad = b"\x00" * int(params.framerate * seconds) * params.sampwidth * params.nchannels
+        with wave.open(str(path), "wb") as w:
+            w.setparams(params)
+            w.writeframes(frames + pad)
+    except Exception as e:
+        # Padding is a safeguard, not a requirement — a WAV we can't rewrite
+        # should still be transcribed.
+        log_bus.emit("debug", f"could not pad utterance tail: {e}")
+
+
+@app.get("/api/call/config")
+async def api_call_config():
+    """Everything a call client needs before the first turn: the models it may
+    pick, the length presets, and the turn-taking defaults. One request instead
+    of the clients hardcoding a copy each."""
+    cfg = AppConfig.get()
+    try:
+        chat_models = await chat.list_models()
+        chat_error = None
+    except Exception as e:
+        # A missing llama.cpp must not stop the tab from rendering — it should
+        # render and say what to start.
+        chat_models, chat_error = [], str(e)
+    return {
+        "chatModels": chat_models,
+        "chatError": chat_error,
+        "defaultChatModel": cfg.call_default_chat_model,
+        "defaultTtsModel": cfg.call_default_tts_model,
+        "defaultAsrModel": cfg.call_default_asr_model,
+        "lengths": cfg.call_lengths,
+        "defaultLength": cfg.call_default_length,
+        "systemPrompt": cfg.call_system_prompt,
+        "vadHangoverMs": cfg.call_vad_hangover_ms,
+        "vadPrerollMs": cfg.call_vad_preroll_ms,
+        "fillerAfterMs": cfg.call_filler_after_ms,
+        "fillerText": cfg.call_filler_text,
+        "streamSampleRate": STREAM_SAMPLE_RATE,
+    }
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """Stream one assistant turn as SSE.
+
+    Events: `{type:"reasoning"|"text", delta}` while tokens arrive,
+    `{type:"speak", index, text}` per ready-to-synthesise segment,
+    `{type:"done", …}`, `{type:"error", message}`. Errors are events rather than
+    HTTP statuses because the stream has already sent its headers by then.
+    """
+    cfg = AppConfig.get()
+    try:
+        body = await request.json()
+    except Exception:
+        return _fail(ValueError("a JSON body is required"))
+
+    model = body.get("model") or cfg.call_default_chat_model
+    if not model:
+        return _fail(ValueError("model is required (no [call].default_chat_model configured)"))
+    history = body.get("messages")
+    if not isinstance(history, list) or not history:
+        return _fail(ValueError("messages is required"))
+
+    length = cfg.call_length_by_id(body.get("length"))
+    thinking = bool(body.get("thinking"))
+    max_tokens = int(body.get("maxTokens") or (length or {}).get("max_tokens") or 400)
+    # Reasoning is spent from the same budget as the answer, so a short preset
+    # with thinking on would run out mid-thought and never speak a word.
+    if thinking:
+        max_tokens += cfg.call_thinking_tokens
+    system_prompt = body.get("systemPrompt")
+    if system_prompt is None:
+        system_prompt = cfg.call_system_prompt
+    # Only the most recent turns are resent; the system prompt is always kept.
+    trimmed = history[-cfg.call_context_messages :]
+    messages = chat.build_messages(trimmed, system_prompt, (length or {}).get("instruction", ""))
+
+    async def gen():
+        try:
+            async for event in chat.stream_chat(
+                model, messages, thinking=thinking, max_tokens=max_tokens
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            log_bus.emit("error", f"chat failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/call/listen")
+async def api_call_listen(
+    file: UploadFile = File(...),
+    model: str = Form(...),
+    language: str | None = Form(None),
+):
+    """One turn of speech in, transcript out — upload and ASR fused.
+
+    /api/uploads + /api/transcribe would do the same in two round trips. A turn
+    is a couple of seconds of 16 kHz mono, so the saving is the RTT, which is
+    exactly the kind of latency a conversation notices (and the phone pays twice
+    over a tunnel).
+    """
+    upload_id = f"{uuid.uuid4().hex}.wav"
+    dest = cfg.uploads_dir / upload_id
+    try:
+        size = await _spool(file, dest)
+        _pad_wav_tail(dest)
+        t0 = time.perf_counter()
+        result = await transcribe({"model": model, "audio": str(dest.resolve()), **({"language": language} if language else {})})
+        wall = time.perf_counter() - t0
+        text = (result.get("text") or "").strip()
+        metrics.record(model, "asr", wall * 1000, detail=f"{len(text)} chars")
+        log_bus.emit(
+            "info",
+            f"call · heard {len(text)} chars from {size // 1024} KB in {wall:.2f}s"
+            + ("" if text else " — nothing recognised"),
+        )
+        # An empty transcript is a normal outcome (a cough, a door), not an error:
+        # the client shows "didn't catch that" and does not spend a turn.
+        return {"text": text, "seconds": round(wall, 2)}
+    except Exception as e:
+        log_bus.emit("error", f"call listen failed: {e}")
+        return _fail(e)
+    finally:
+        media.prune_uploads()
+
+
+@app.post("/api/call/speak")
+async def api_call_speak(request: Request):
+    """Synthesise one segment and return it as raw PCM, streamed when possible.
+
+    The response shape is identical either way — `audio/pcm`, chunked, with the
+    format in headers — so a client has one playback path. Only the time to the
+    first byte differs: a streaming-registered model starts sending while it is
+    still generating, everything else renders the WAV first and sends it whole.
+    """
+    try:
+        body = await request.json()
+        req, _ = _speech_request(body)
+    except Exception as e:
+        return _fail(e)
+
+    model = str(body.get("model"))
+    headers = {
+        "X-Sample-Rate": str(STREAM_SAMPLE_RATE),
+        "X-Channels": "1",
+        "X-Sample-Format": "s16le",
+        "Cache-Control": "no-store",
+    }
+
+    if _model_streams(model):
+        async def stream():
+            # Timed here rather than in the proxy so both branches land in
+            # telemetry the same way /api/tts does — otherwise every spoken
+            # reply in a call would be invisible on the Telemetry tab.
+            t0 = time.perf_counter()
+            total = 0
+            async for chunk in speech_stream(req):
+                total += len(chunk)
+                yield chunk
+            wall = time.perf_counter() - t0
+            seconds = total / 2 / STREAM_SAMPLE_RATE
+            metrics.record(
+                model, "tts", wall * 1000,
+                throughput=(seconds / wall) if wall > 0 else None,
+                unit="× realtime", detail=f"{seconds:.1f}s audio (stream)",
+            )
+
+        return StreamingResponse(stream(), media_type="audio/pcm", headers=headers)
+
+    # Non-streaming model: render the whole clip, then hand over its PCM. The
+    # WAV's own rate is what matters here, not the streaming contract.
+    try:
+        t0 = time.perf_counter()
+        wav = await speech(req)
+        wall = time.perf_counter() - t0
+    except Exception as e:
+        log_bus.emit("error", f"call speak failed: {e}")
+        return _fail(e)
+    pcm, rate = _wav_to_pcm(wav)
+    duration = len(pcm) / 2 / rate if rate else None
+    metrics.record(
+        model, "tts", wall * 1000,
+        throughput=(duration / wall) if (duration and wall > 0) else None,
+        unit="× realtime", detail=f"{duration:.1f}s audio" if duration else "",
+    )
+    headers["X-Sample-Rate"] = str(rate)
+    return Response(content=pcm, media_type="audio/pcm", headers=headers)
+
+
+def _wav_to_pcm(data: bytes) -> "tuple[bytes, int]":
+    """Strip a mono 16-bit WAV down to its raw frames + sample rate."""
+    with wave.open(io.BytesIO(data), "rb") as w:
+        return w.readframes(w.getnframes()), w.getframerate()
+
+
+@app.post("/api/call/warmup")
+async def api_call_warmup(request: Request):
+    """Load every model a call needs before the first turn.
+
+    Lazy loading means the first request to each model pays a full load into
+    VRAM, and the server never unloads afterwards. Paying all of it here, behind
+    a "warming up" state, is the difference between a first turn that takes half
+    a minute and one that behaves like the rest.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cfg_ = AppConfig.get()
+    out: dict = {}
+
+    async def timed(name: str, coro):
+        t0 = time.perf_counter()
+        try:
+            await coro
+            out[name] = round((time.perf_counter() - t0) * 1000)
+        except Exception as e:
+            out[name] = None
+            out[f"{name}Error"] = str(e)
+
+    tasks = []
+    tts_model = body.get("ttsModel")
+    if tts_model:
+        # Synthesising the filler phrase warms the model *and* produces the clip
+        # the client plays when a turn takes a moment — one request, both jobs.
+        speak_body = {**body, "model": tts_model, "text": cfg_.call_filler_text}
+        speak_body.pop("ttsModel", None)
+
+        async def warm_tts():
+            req, _ = _speech_request(speak_body)
+            wav = await speech(req)
+            out["filler"] = base64.b64encode(wav).decode("ascii")
+
+        tasks.append(timed("tts", warm_tts()))
+
+    asr_model = body.get("asrModel")
+    if asr_model:
+        async def warm_asr():
+            silence = cfg.uploads_dir / f"warmup-{uuid.uuid4().hex}.wav"
+            try:
+                with wave.open(str(silence), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(16000)
+                    # Must exceed one streaming window, or a streaming ASR model
+                    # rejects it outright ("shorter than the first required chunk").
+                    w.writeframes(b"\x00\x00" * 24000)  # 1.5 s
+                await transcribe({"model": asr_model, "audio": str(silence.resolve())})
+            finally:
+                silence.unlink(missing_ok=True)
+
+        tasks.append(timed("asr", warm_asr()))
+
+    chat_model = body.get("chatModel")
+    if chat_model:
+        async def warm_chat():
+            # Also forces llama-swap to load this model now rather than on the
+            # first real turn, where the swap would land inside the response time.
+            async for _ in chat.stream_chat(
+                chat_model, [{"role": "user", "content": "Hi"}], thinking=False, max_tokens=1
+            ):
+                pass
+
+        tasks.append(timed("chat", warm_chat()))
+
+    if tasks:
+        await asyncio.gather(*tasks)
+    log_bus.emit(
+        "info",
+        "call warm-up · "
+        + " · ".join(f"{k} {v} ms" for k, v in out.items() if k in ("tts", "asr", "chat") and v is not None),
+    )
+    return out
 
 
 # --- OCR (page photo -> text, for the Android companion app) ----------------

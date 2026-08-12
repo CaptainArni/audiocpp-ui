@@ -38,6 +38,62 @@ threads = 1
 # Start the inference server automatically (with all known models) when the app launches.
 autostart = true
 
+# ffmpeg, used by /api/uploads to turn any audio or video file into the mono
+# 16-bit PCM WAV everything downstream expects. Optional: without ffmpeg only
+# .wav uploads work — GET /api/media/support reports which.
+[media]
+# Blank => resolve "ffmpeg"/"ffprobe" from PATH.
+ffmpeg = ""
+ffprobe = ""
+max_duration_sec = 3600
+max_upload_mb = 2048
+convert_timeout_sec = 1800
+uploads_retention_hours = 24
+asr_timeout_sec = 900
+
+# The Call tab: speak to a llama.cpp model and hear the reply in a chosen voice.
+# Chat models are discovered from the llama.cpp server's /v1/models, so they are
+# not listed here — only what llama.cpp cannot tell us. Omit this whole section
+# to fall back to the built-in defaults.
+[call]
+default_chat_model = ""            # blank = first discovered model
+default_tts_model = "VoxCPM2"      # a streaming-capable model makes calls feel live
+default_asr_model = ""             # blank = first downloaded ASR model
+temperature = 0.7
+top_p = 0.95
+thinking_tokens = 900              # extra budget when thinking is on (reasoning shares max_tokens)
+context_messages = 20              # prior messages resent per turn
+timeout_sec = 300
+vad_hangover_ms = 700              # silence that ends a turn
+vad_preroll_ms = 300               # audio kept from before speech was detected
+filler_after_ms = 1500             # play a short filler if the reply is slow; 0 = off
+filler_text = "Moment…"
+default_length = "normal"
+# Read aloud, so the model has to be talked out of writing for a screen.
+system_prompt = """Du bist ein Gesprächspartner in einem Sprachanruf.
+Deine Antwort wird laut vorgelesen. Antworte in gesprochener Sprache:
+ganze, einfache Sätze; kein Markdown, keine Aufzählungen, keine Emojis, keine URLs."""
+
+# Response-length presets: max_tokens *and* the instruction, because a token cap
+# alone truncates mid-word instead of making the answer end.
+[[call.length]]
+id = "brief"
+label = "Kurz"
+max_tokens = 140
+instruction = "Fasse dich sehr kurz: ein bis zwei Sätze."
+
+[[call.length]]
+id = "normal"
+label = "Normal"
+max_tokens = 400
+instruction = "Antworte in wenigen Sätzen, höchstens einem kurzen Absatz."
+
+[[call.length]]
+id = "long"
+label = "Ausführlich"
+max_tokens = 1000
+instruction = "Antworte so ausführlich, wie die Frage es verlangt."
+
 # The llama.cpp server used for OCR (page photo -> text) by /api/ocr.
 # Started and managed OUTSIDE this app (e.g. llama-swap on :8080); we only send requests.
 # Omit this whole section if you don't need OCR.

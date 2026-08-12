@@ -48,7 +48,7 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
         : model.clone
           ? "clone"
           : "builtin";
-    setVoice({ mode, voiceId: null, upload: null, savedVoiceId: remembered, referenceText: "" });
+    setVoice({ mode, voiceId: null, savedVoiceId: remembered });
     setInstructions("");
     // A language picked for the previous model may not exist on this one.
     setParams((p) => ({ ...p, language: undefined }));
@@ -77,8 +77,11 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
       notifications.show({ color: "yellow", message: "Select a built-in voice." });
       return;
     }
-    if (voice.mode === "clone" && !voice.upload && !voice.savedVoiceId) {
-      notifications.show({ color: "yellow", message: "Pick a saved voice or upload a reference clip to clone." });
+    if (voice.mode === "clone" && !voice.savedVoiceId) {
+      notifications.show({
+        color: "yellow",
+        message: "Pick a saved voice — create one in the Saved Voices tab.",
+      });
       return;
     }
 
@@ -89,9 +92,6 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
         text,
         voiceId: voice.mode === "builtin" ? voice.voiceId : undefined,
         savedVoiceId: voice.mode === "clone" ? voice.savedVoiceId || undefined : undefined,
-        uploadId: voice.mode === "clone" && !voice.savedVoiceId ? voice.upload?.uploadId : undefined,
-        referenceText:
-          voice.mode === "clone" && !voice.savedVoiceId ? voice.referenceText || undefined : undefined,
         instructions: model.voiceDesign ? instructions || undefined : undefined,
         params,
       };

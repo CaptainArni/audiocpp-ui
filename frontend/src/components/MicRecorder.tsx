@@ -11,7 +11,18 @@ interface Props {
   onUploaded: (upload: { uploadId: string; name: string }) => void;
   /** Optional passage to display for the speaker to read aloud while recording. */
   prompt?: string;
+  /** Resample the recording to this rate before upload (ASR needs 16 kHz). */
+  targetRate?: number;
+  buttonLabel?: string;
+  /** Line under the level meter; the default is voice-cloning advice. */
+  hint?: string;
+  successMessage?: string;
+  /** Stop automatically at this many seconds — MediaRecorder buffers in memory. */
+  maxSeconds?: number;
 }
+
+/** Warn this long before [maxSeconds] that the recording is about to be cut off. */
+const WARN_BEFORE_SEC = 60;
 
 function pickMimeType(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
@@ -21,7 +32,15 @@ function pickMimeType(): string {
   return "";
 }
 
-export function MicRecorder({ onUploaded, prompt }: Props) {
+export function MicRecorder({
+  onUploaded,
+  prompt,
+  targetRate,
+  buttonLabel = "Record from microphone",
+  hint = "A few seconds of clean speech works best. Speak at a normal volume.",
+  successMessage = "Recording captured and set as the reference clip.",
+  maxSeconds = 30 * 60,
+}: Props) {
   const [state, setState] = useState<State>("idle");
   const [error, setError] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
@@ -51,6 +70,13 @@ export function MicRecorder({ onUploaded, prompt }: Props) {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }
+
+  // Every chunk stays in memory until the recording is encoded, so a runaway
+  // recording is a real memory problem — cut it off at the cap.
+  useEffect(() => {
+    if (state === "recording" && elapsed >= maxSeconds) stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elapsed, state, maxSeconds]);
 
   // Full teardown on unmount.
   useEffect(() => {
@@ -137,11 +163,11 @@ export function MicRecorder({ onUploaded, prompt }: Props) {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(URL.createObjectURL(blob));
 
-      const wavFile = await blobToWavFile(blob, "recording.wav");
+      const wavFile = await blobToWavFile(blob, "recording.wav", targetRate);
       const res = await api.upload(wavFile);
       onUploaded({ uploadId: res.uploadId, name: res.originalName });
       setState("recorded");
-      notifications.show({ color: "teal", message: "Recording captured and set as the reference clip." });
+      notifications.show({ color: "teal", message: successMessage });
     } catch (err) {
       const msg = (err as Error).message || "Could not process the recording.";
       setError(msg);
@@ -189,7 +215,7 @@ export function MicRecorder({ onUploaded, prompt }: Props) {
           variant="light"
           color="red"
         >
-          Record from microphone
+          {buttonLabel}
         </Button>
       )}
 
@@ -210,8 +236,10 @@ export function MicRecorder({ onUploaded, prompt }: Props) {
             </Button>
           </Group>
           <Progress value={level} color="red" transitionDuration={80} />
-          <Text size="xs" c="dimmed">
-            A few seconds of clean speech works best. Speak at a normal volume.
+          <Text size="xs" c={elapsed >= maxSeconds - WARN_BEFORE_SEC ? "orange" : "dimmed"}>
+            {elapsed >= maxSeconds - WARN_BEFORE_SEC
+              ? `Recording stops automatically in ${maxSeconds - elapsed}s (${Math.round(maxSeconds / 60)} min limit).`
+              : hint}
           </Text>
         </Stack>
       )}

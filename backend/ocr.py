@@ -91,7 +91,14 @@ async def transcribe_image(
             r = await c.post(url, json=body)
     except httpx.RequestError as e:
         log_bus.emit("error", f"OCR unreachable at {url}: {e}")
-        raise AudiocppError(502, f"OCR server unreachable at {url}: {e}") from e
+        # Name the process and the remedy: this reaches the phone, where nobody
+        # can act on a bare host:port. llama.cpp is started separately (it is not
+        # spawned by this app), so "not running" is the usual cause.
+        raise AudiocppError(
+            502,
+            f"the llama.cpp OCR server is not responding at {cfg.llama_base_url()} "
+            f"— start llama.cpp on the PC, then try again ({e})",
+        ) from e
     dt = time.perf_counter() - t0
 
     if r.status_code != 200:

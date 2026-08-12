@@ -178,8 +178,8 @@ export function VoicesPanel() {
             <Title order={5}>Saved voices ({voices.length})</Title>
             {voices.length === 0 ? (
               <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
-                No saved voices yet — create one on the left. Saved voices show up in the TTS tab under "Clone from
-                clip → Saved voices".
+                No saved voices yet — create one on the left. This is the only place voices are created, previewed and
+                deleted; every other tab just picks from this list.
               </Alert>
             ) : (
               <ScrollArea.Autosize mah={640} offsetScrollbars type="auto">

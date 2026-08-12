@@ -8,6 +8,7 @@ import {
   Grid,
   Group,
   Paper,
+  Progress,
   SegmentedControl,
   Stack,
   Text,
@@ -22,14 +23,27 @@ import {
   IconFileMusic,
   IconInfoCircle,
   IconUpload,
+  IconVolume,
   IconWriting,
   IconX,
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
-import { fileToWavUpload } from "../lib/wav";
-import type { DiscoveredModel, TranscribeResult, TranscriptWord } from "../types";
+import { fileToWavUpload, isProbablyVideo } from "../lib/wav";
+import type { DiscoveredModel, MediaSupport, TranscribeResult, TranscriptWord } from "../types";
+import { MicRecorder } from "./MicRecorder";
 import { ModelSelect } from "./ModelSelect";
+import { TextPlayer } from "./TextPlayer";
+import { VoicePicker, type VoiceValue } from "./VoicePicker";
+
+/** m:ss for short clips, h:mm:ss once a recording runs past an hour. */
+function formatDuration(sec: number): string {
+  const s = Math.round(sec);
+  const mm = Math.floor(s / 60) % 60;
+  const ss = String(s % 60).padStart(2, "0");
+  const hh = Math.floor(s / 3600);
+  return hh > 0 ? `${hh}:${String(mm).padStart(2, "0")}:${ss}` : `${mm}:${ss}`;
+}
 
 interface Props {
   models: DiscoveredModel[];
@@ -115,17 +129,36 @@ function KaraokeTranscript({ words, audioUrl }: { words: TranscriptWord[]; audio
   );
 }
 
+/** ASR (and its Silero VAD chunker) works at 16 kHz — everything is resampled to this. */
+const ASR_RATE = 16000;
+
 export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
   const asrModels = models.filter((m) => m.task === "asr" && m.family);
   const [modelId, setModelId] = useState<string | null>(null);
-  const [upload, setUpload] = useState<{ uploadId: string; name: string } | null>(null);
+  const [upload, setUpload] = useState<{ uploadId: string; name: string; durationSec?: number | null } | null>(null);
   const [uploading, setUploading] = useState(false);
+  /** Upload progress 0..1 while sending a video, then null while ffmpeg runs. */
+  const [progress, setProgress] = useState<number | null>(null);
+  const [stage, setStage] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [result, setResult] = useState<TranscribeResult | null>(null);
+  const [source, setSource] = useState<"file" | "record">("file");
+  const [support, setSupport] = useState<MediaSupport | null>(null);
   const [mode, setMode] = useState<"text" | "karaoke">(
     () => (localStorage.getItem("asrMode") === "text" ? "text" : "karaoke"),
   );
   const model = asrModels.find((m) => m.id === modelId);
+
+  // "Read it aloud": a separate model/voice choice from the ASR one above, kept
+  // in its own storage slot so it doesn't fight with the TTS tab's selection.
+  const [speakModelId, setSpeakModelId] = useState<string | null>(null);
+  const [speakVoice, setSpeakVoice] = useState<VoiceValue>({ mode: "clone" });
+  const speakModel = models.find((m) => m.id === speakModelId);
+
+  // Whether the backend has ffmpeg decides if video files are offered at all.
+  useEffect(() => {
+    api.getMediaSupport().then(setSupport).catch(() => setSupport(null));
+  }, []);
 
   if (asrModels.length === 0) {
     return (
@@ -139,19 +172,59 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
     );
   }
 
+  /**
+   * Send a file straight to the backend so ffmpeg can pull the audio out — the
+   * browser can't decode a video container, and shipping a big file needs a
+   * progress bar.
+   */
+  async function uploadViaServer(file: File) {
+    setStage("Uploading…");
+    setProgress(0);
+    const res = await api.upload(file, {
+      rate: ASR_RATE,
+      onProgress: (f) => {
+        setProgress(f);
+        // Once the bytes are all sent, ffmpeg is what we're waiting on.
+        if (f >= 1) setStage("Extracting audio…");
+      },
+    });
+    return res;
+  }
+
   async function onDrop(files: File[]) {
     const file = files[0];
     if (!file) return;
+    if (isProbablyVideo(file) && support && !support.ffmpeg) {
+      notifications.show({
+        color: "yellow",
+        title: "Video needs ffmpeg",
+        message: "Install ffmpeg on the PC (or set [media].ffmpeg in config.toml) to transcribe video files.",
+      });
+      return;
+    }
     setUploading(true);
     try {
-      // The ASR pipeline (and its Silero VAD chunker) works at 16 kHz.
-      const res = await api.upload(await fileToWavUpload(file, 16000));
-      setUpload({ uploadId: res.uploadId, name: res.originalName });
+      // Plain audio decodes faster in the browser than it uploads; only video
+      // (and anything AudioContext chokes on) makes the round trip.
+      let res;
+      if (isProbablyVideo(file)) {
+        res = await uploadViaServer(file);
+      } else {
+        try {
+          setStage("Converting…");
+          res = await api.upload(await fileToWavUpload(file, ASR_RATE));
+        } catch {
+          res = await uploadViaServer(file);
+        }
+      }
+      setUpload({ uploadId: res.uploadId, name: res.originalName, durationSec: res.durationSec });
       setResult(null);
     } catch (err) {
       notifications.show({ color: "red", title: "Upload failed", message: (err as Error).message });
     } finally {
       setUploading(false);
+      setStage(null);
+      setProgress(null);
     }
   }
 
@@ -190,21 +263,77 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
               value={modelId}
               onChange={setModelId}
             />
-            <Dropzone onDrop={onDrop} loading={uploading} accept={["audio/*", "video/webm"]} maxFiles={1} multiple={false}>
-              <Group justify="center" gap="md" mih={90} style={{ pointerEvents: "none" }}>
-                <Dropzone.Accept>
-                  <IconUpload size={40} />
-                </Dropzone.Accept>
-                <Dropzone.Reject>
-                  <IconX size={40} />
-                </Dropzone.Reject>
-                <Dropzone.Idle>
-                  <IconFileMusic size={40} />
-                </Dropzone.Idle>
-                <Text size="sm">Drop an audio file to transcribe, or click to browse</Text>
-              </Group>
-            </Dropzone>
-            {upload && <Text size="sm" c="teal">Audio: {upload.name}</Text>}
+            <SegmentedControl
+              fullWidth
+              value={source}
+              onChange={(v) => setSource(v as "file" | "record")}
+              data={[
+                { label: "Audio / video file", value: "file" },
+                { label: "Microphone", value: "record" },
+              ]}
+            />
+
+            {source === "file" ? (
+              <>
+                <Dropzone
+                  onDrop={onDrop}
+                  loading={uploading}
+                  accept={["audio/*", "video/*"]}
+                  maxFiles={1}
+                  multiple={false}
+                >
+                  <Group justify="center" gap="md" mih={90} style={{ pointerEvents: "none" }}>
+                    <Dropzone.Accept>
+                      <IconUpload size={40} />
+                    </Dropzone.Accept>
+                    <Dropzone.Reject>
+                      <IconX size={40} />
+                    </Dropzone.Reject>
+                    <Dropzone.Idle>
+                      <IconFileMusic size={40} />
+                    </Dropzone.Idle>
+                    <Text size="sm">Drop an audio or video file to transcribe, or click to browse</Text>
+                  </Group>
+                </Dropzone>
+                {support?.ffmpeg === false ? (
+                  <Text size="xs" c="orange">
+                    ffmpeg was not found on the PC — only .wav and formats the browser can decode will work.
+                    Set <Code>[media].ffmpeg</Code> in config.toml to enable video.
+                  </Text>
+                ) : (
+                  <Text size="xs" c="dimmed">
+                    Video files (mp4, mkv, mov …) have their audio track extracted on the PC.
+                  </Text>
+                )}
+              </>
+            ) : (
+              <MicRecorder
+                targetRate={ASR_RATE}
+                buttonLabel="Record from microphone"
+                hint="Recording stops when you press Stop; it is transcribed as one piece."
+                successMessage="Recording captured — press Transcribe."
+                onUploaded={(u) => {
+                  setUpload(u);
+                  setResult(null);
+                }}
+              />
+            )}
+
+            {stage && (
+              <Stack gap={4}>
+                <Text size="xs" c="dimmed">
+                  {stage}
+                </Text>
+                {progress !== null && <Progress value={progress * 100} size="sm" animated={progress >= 1} />}
+              </Stack>
+            )}
+
+            {upload && (
+              <Text size="sm" c="teal">
+                Audio: {upload.name}
+                {upload.durationSec ? ` · ${formatDuration(upload.durationSec)}` : ""}
+              </Text>
+            )}
             {model?.timestamps && (
               <div>
                 <SegmentedControl
@@ -275,6 +404,36 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
               <KaraokeTranscript words={result.words} audioUrl={api.uploadAudioUrl(upload.uploadId)} />
             ) : (
               <Text style={{ whiteSpace: "pre-wrap" }}>{result.text || "(empty)"}</Text>
+            )}
+
+            {/* Say it back in another voice. The transcript is already the text
+                a reading would be made of, so this is the same job as the
+                Library player — hence the shared TextPlayer. */}
+            {result.text.trim() !== "" && (
+              <Stack gap="sm" mt="md">
+                <Group gap="xs">
+                  <IconVolume size={16} />
+                  <Title order={6}>Read it aloud</Title>
+                </Group>
+                <ModelSelect
+                  models={models}
+                  task="tts"
+                  registeredIds={registeredIds}
+                  serverRunning={serverRunning}
+                  value={speakModelId}
+                  onChange={setSpeakModelId}
+                  storageKey="asr.speak.tts"
+                />
+                <VoicePicker model={speakModel} value={speakVoice} onChange={setSpeakVoice} />
+                <TextPlayer
+                  model={speakModel}
+                  voice={speakVoice}
+                  text={result.text}
+                  registeredIds={registeredIds}
+                  serverRunning={serverRunning}
+                  hint="Speaks the transcript with the chosen model and voice."
+                />
+              </Stack>
             )}
           </Paper>
         )}

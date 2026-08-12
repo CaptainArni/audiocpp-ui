@@ -18,12 +18,17 @@ def generate_server_json(selected: list[dict]) -> tuple[str, list[str]]:
     for m in selected:
         if not m.get("family") or not m.get("task"):
             continue
+        # A streaming session is a superset here: it answers ordinary requests
+        # *and* can emit audio/transcript chunks as they are produced, which is
+        # what makes a voice call feel live. Only the families the catalog marks
+        # `streaming` get it, because a family whose streaming session refused
+        # offline requests would break /api/tts and /api/transcribe.
         entry: dict = {
             "id": m["id"],
             "family": m["family"],
             "path": m["path"],
             "task": m["task"],
-            "mode": "offline",
+            "mode": "streaming" if m.get("streaming") else "offline",
             "lazy": True,
         }
         load_options = dict(m.get("loadOptions") or {})
@@ -39,6 +44,9 @@ def generate_server_json(selected: list[dict]) -> tuple[str, list[str]]:
             entry["load_options"] = load_options
         if session_options:
             entry["session_options"] = session_options
+        request_options = dict(m.get("defaultRequestOptions") or {})
+        if request_options:
+            entry["default_request_options"] = request_options
         models.append(entry)
 
     doc = {

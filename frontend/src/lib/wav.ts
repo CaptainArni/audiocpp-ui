@@ -128,7 +128,7 @@ export async function inspectWav(blob: Blob): Promise<WavInfo> {
 }
 
 /** Resample mono Float32 samples to a different rate via OfflineAudioContext. */
-async function resampleMono(samples: Float32Array, fromRate: number, toRate: number): Promise<Float32Array> {
+export async function resampleMono(samples: Float32Array, fromRate: number, toRate: number): Promise<Float32Array> {
   const duration = samples.length / fromRate;
   const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(duration * toRate)), toRate);
   const buf = off.createBuffer(1, samples.length, fromRate);
@@ -162,6 +162,23 @@ export async function blobToWavFile(blob: Blob, fileName = "recording.wav", targ
   } finally {
     void ctx.close();
   }
+}
+
+/** Containers the browser can't hand to decodeAudioData — send these to the backend. */
+const VIDEO_EXTENSIONS = ["mp4", "mkv", "m4v", "mov", "avi", "webm", "ts", "flv", "wmv", "mpg", "mpeg"];
+
+/**
+ * True for anything that looks like a video container, so the caller can route
+ * it to the backend's ffmpeg instead of trying to decode it in the browser.
+ *
+ * `.webm` is ambiguous (MediaRecorder writes audio-only .webm too), but sending
+ * one to the backend is merely slower, never wrong.
+ */
+export function isProbablyVideo(file: File): boolean {
+  if (file.type.startsWith("video/")) return true;
+  if (file.type.startsWith("audio/")) return false;
+  const ext = file.name.toLowerCase().split(".").pop() ?? "";
+  return VIDEO_EXTENSIONS.includes(ext);
 }
 
 /**

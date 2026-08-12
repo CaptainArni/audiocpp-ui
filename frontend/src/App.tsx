@@ -19,6 +19,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconMicrophone,
+  IconPhone,
   IconScan,
   IconUsers,
   IconWaveSine,
@@ -29,6 +30,7 @@ import type { DiscoveredModel, ServerRunState, ServerStatus } from "./types";
 import { ServerControlBar } from "./components/ServerControlBar";
 import { TtsPanel } from "./components/TtsPanel";
 import { AsrPanel } from "./components/AsrPanel";
+import { CallPanel } from "./components/CallPanel";
 import { VoicesPanel } from "./components/VoicesPanel";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { OcrPanel } from "./components/OcrPanel";
@@ -152,6 +154,9 @@ export function App() {
                 <Tabs.Tab value="asr" leftSection={<IconMicrophone size={16} />}>
                   Transcribe
                 </Tabs.Tab>
+                <Tabs.Tab value="call" leftSection={<IconPhone size={16} />}>
+                  Call
+                </Tabs.Tab>
                 <Tabs.Tab value="voices" leftSection={<IconUsers size={16} />}>
                   Saved Voices
                 </Tabs.Tab>
@@ -171,6 +176,9 @@ export function App() {
               </Tabs.Panel>
               <Tabs.Panel value="asr" pt="md">
                 <AsrPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+              </Tabs.Panel>
+              <Tabs.Panel value="call" pt="md">
+                <CallPanel models={models} registeredIds={registeredIds} serverRunning={running} />
               </Tabs.Panel>
               <Tabs.Panel value="voices" pt="md">
                 <VoicesPanel />
@@ -195,7 +203,16 @@ export function App() {
                   {logsOpen ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
                 </ActionIcon>
               </Group>
-              <Collapse expanded={logsOpen}>
+              {/* keepMounted={false} is required: Mantine's default keepMounted
+                  hides the collapsed subtree with React 19's <Activity>, which
+                  tears down and re-runs effects while keeping refs/state. That
+                  makes @monaco-editor/react dispose its editor on collapse and
+                  then call setModel() on the disposed instance on expand
+                  ("InstantiationService has been disposed"). A real unmount is
+                  cheap here — the SSE stream replays the log backlog on
+                  reconnect, so the panel comes back with the lines that arrived
+                  while it was closed. */}
+              <Collapse expanded={logsOpen} keepMounted={false}>
                 <LogPanel />
               </Collapse>
             </Paper>
