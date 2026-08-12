@@ -13,6 +13,7 @@ import {
   ScrollArea,
   SegmentedControl,
   Select,
+  Slider,
   Stack,
   Switch,
   Text,
@@ -26,6 +27,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconDeviceFloppy,
+  IconHistory,
   IconInfoCircle,
   IconMicrophone,
   IconPhone,
@@ -39,7 +41,8 @@ import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import type { CallPhase, CallSettings, CallState } from "../lib/callEngine";
 import { callSession } from "../lib/callSession";
-import type { CallConfig, DiscoveredModel } from "../types";
+import { DEFAULT_SPEECH_FACTOR } from "../lib/vad";
+import type { CallConfig, ConversationSummary, DiscoveredModel } from "../types";
 import { ModelSelect } from "./ModelSelect";
 import { VoicePicker, type VoiceValue } from "./VoicePicker";
 
@@ -59,6 +62,18 @@ const PHASE_LABEL: Record<CallPhase, string> = {
   preparing: "Preparing the voice…",
   speaking: "Speaking",
   error: "Something went wrong",
+};
+
+// What the orb *does* in each phase. A button's accessible name should name the
+// action, not the state — the state is already announced by the label under it.
+const ORB_LABEL: Partial<Record<CallPhase, string>> = {
+  idle: "Start the call",
+  speaking: "Interrupt the assistant",
+  preparing: "Interrupt the assistant",
+  thinking: "Interrupt the assistant",
+  error: "Keep talking after the error",
+  listening: "Hold to talk",
+  hearing: "Listening to you",
 };
 
 const PHASE_COLOR: Record<CallPhase, string> = {
@@ -112,11 +127,17 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
   });
   const [thinking, setThinking] = useState(stored("thinking", false));
   const [length, setLength] = useState<string>(stored("length", "normal"));
+  const [language, setLanguage] = useState<string>(stored("language", ""));
   const [handsFree, setHandsFree] = useState(stored("handsFree", true));
   const [bargeIn, setBargeIn] = useState(stored("bargeIn", false));
   const [fillerEnabled, setFillerEnabled] = useState(stored("filler", true));
+  const [speechFactor, setSpeechFactor] = useState<number>(stored("speechFactor", DEFAULT_SPEECH_FACTOR));
   const [setupOpen, setSetupOpen] = useState(true);
   const [typed, setTyped] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // The call lives outside this component (see lib/callSession) — switching
   // tabs must not end it. This only reads it.
@@ -144,6 +165,16 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
       .catch((err) => setConfigError((err as Error).message));
   }, []);
 
+  // A language chosen for the previous model may not exist on this one, and an
+  // unsupported code is rejected upstream on every single turn.
+  useEffect(() => {
+    if (!ttsModel || !language) return;
+    if (!ttsModel.languages.includes(language)) {
+      setLanguage("");
+      store("language", "");
+    }
+  }, [ttsModel, language]);
+
   // Deliberately no teardown on unmount: this panel is hidden and re-shown by
   // React's <Activity> whenever you change tabs, and hanging up there would end
   // the call every time you glanced at another tab. The session ends when the
@@ -159,15 +190,29 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
       asrModel: asrModelId ?? "",
       thinking,
       length,
+      language: language || undefined,
       handsFree,
       bargeIn,
       fillerEnabled,
+      speechFactor,
       voice: {
         voiceId: voice.mode === "builtin" ? voice.voiceId : undefined,
         savedVoiceId: voice.mode === "clone" ? voice.savedVoiceId || undefined : undefined,
       },
     }),
-    [chatModelId, ttsModelId, asrModelId, thinking, length, handsFree, bargeIn, fillerEnabled, voice],
+    [
+      chatModelId,
+      ttsModelId,
+      asrModelId,
+      thinking,
+      length,
+      language,
+      handsFree,
+      bargeIn,
+      fillerEnabled,
+      speechFactor,
+      voice,
+    ],
   );
 
   useEffect(() => {
@@ -209,7 +254,9 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
     if (!inCall) return;
     const down = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      // BUTTON included: Space on a focused button must activate that button.
+      // The orb handles its own keys, so without this both fire for one press.
+      if (target && /^(INPUT|TEXTAREA|BUTTON)$/.test(target.tagName)) return;
       if (e.code === "Space" && !e.repeat) {
         e.preventDefault();
         callSession.pressToTalk();
@@ -219,7 +266,9 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
     };
     const up = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      // BUTTON included: Space on a focused button must activate that button.
+      // The orb handles its own keys, so without this both fire for one press.
+      if (target && /^(INPUT|TEXTAREA|BUTTON)$/.test(target.tagName)) return;
       if (e.code === "Space") {
         e.preventDefault();
         callSession.releaseToTalk();
@@ -233,15 +282,70 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
     };
   }, [inCall]);
 
+  // Conversations are saved *only* here, by hand. Nothing writes one in the
+  // background: a call is something you had out loud in your own room, and
+  // filing every one of them away automatically is a surprise, not a feature.
+  const refreshConversations = useCallback(() => {
+    api
+      .getConversations()
+      .then(setConversations)
+      .catch(() => {
+        /* the list is a convenience; a call must not depend on it */
+      });
+  }, []);
+
+  useEffect(() => {
+    if (historyOpen) refreshConversations();
+  }, [historyOpen, refreshConversations]);
+
   const saveConversation = async () => {
     const messages = state?.messages ?? [];
     if (messages.length === 0) return;
-    const pages = messages.map((m) => `${m.role === "user" ? "Du" : "Assistent"}: ${m.content}`);
+    setSaving(true);
     try {
-      await api.createReading({ name: `Gespräch ${new Date().toLocaleString()}`, pages });
-      notifications.show({ color: "teal", message: "Conversation saved to the Library." });
+      if (savedId) {
+        // Re-saving a conversation that was loaded (or already saved this
+        // session) updates it instead of leaving a trail of near-duplicates.
+        await api.updateConversation(savedId, { messages, chatModel: chatModelId });
+        notifications.show({ color: "teal", message: "Conversation updated." });
+      } else {
+        const saved = await api.createConversation({ messages, chatModel: chatModelId });
+        setSavedId(saved.id);
+        notifications.show({ color: "teal", message: `Saved as “${saved.name}”.` });
+      }
+      refreshConversations();
     } catch (err) {
       notifications.show({ color: "red", title: "Save failed", message: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const loadConversation = async (id: string) => {
+    try {
+      const c = await api.getConversation(id);
+      callSession.loadConversation(c.messages);
+      setSavedId(c.id);
+      if (c.chatModel) setChatModelId(c.chatModel);
+      setHistoryOpen(false);
+      notifications.show({
+        color: "teal",
+        message: inCall
+          ? `Continuing “${c.name}”.`
+          : `Loaded “${c.name}” — start the call to continue it.`,
+      });
+    } catch (err) {
+      notifications.show({ color: "red", title: "Could not load", message: (err as Error).message });
+    }
+  };
+
+  const removeConversation = async (id: string) => {
+    try {
+      await api.deleteConversation(id);
+      if (savedId === id) setSavedId(null);
+      refreshConversations();
+    } catch (err) {
+      notifications.show({ color: "red", title: "Could not delete", message: (err as Error).message });
     }
   };
 
@@ -287,7 +391,6 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                 }}
                 searchable
                 nothingFoundMessage="No chat models"
-                disabled={inCall}
               />
               {chatModel && !chatModel.loaded && (
                 <Text size="xs" c="dimmed">
@@ -338,6 +441,25 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                   if (v.mode === "clone") store("savedVoiceId", v.savedVoiceId ?? null);
                 }}
               />
+
+              {/* Language reaches both ASR and TTS. Android has always sent one;
+                  Studio sent nothing, so the same call behaved differently
+                  depending on which client placed it. */}
+              {(ttsModel?.languages.length ?? 0) > 0 && (
+                <Select
+                  label="Language"
+                  description="Used for both listening and speaking"
+                  data={[
+                    { value: "", label: "Auto (model default)" },
+                    ...(ttsModel?.languages ?? []).map((l) => ({ value: l, label: l })),
+                  ]}
+                  value={language}
+                  onChange={(v) => {
+                    setLanguage(v ?? "");
+                    store("language", v ?? "");
+                  }}
+                />
+              )}
 
               <div>
                 <Text size="sm" fw={500} mb={4}>
@@ -392,6 +514,45 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                   store("filler", e.currentTarget.checked);
                 }}
               />
+
+              {/* One fixed threshold cannot serve both a quiet talker in a still
+                  room and a normal voice over a fan. Live while the call runs,
+                  because the only way to tune this is to hear it. */}
+              <div>
+                <Group justify="space-between" mb={2}>
+                  <Text size="sm" fw={500}>
+                    Mic sensitivity
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {speechFactor <= 2 ? "more sensitive" : speechFactor >= 4 ? "less sensitive" : "balanced"}
+                  </Text>
+                </Group>
+                <Slider
+                  min={1.4}
+                  max={5}
+                  step={0.2}
+                  // Inverted: dragging right should mean "pick up more", but a
+                  // *higher* factor means the opposite, and a control that runs
+                  // backwards is worse than no control.
+                  value={6.4 - speechFactor}
+                  onChange={(v) => setSpeechFactor(Number((6.4 - v).toFixed(1)))}
+                  onChangeEnd={(v) => store("speechFactor", Number((6.4 - v).toFixed(1)))}
+                  label={null}
+                  // Right = a lower threshold = picks up more, which is what a
+                  // quiet talker in a still room needs. Left raises the bar for
+                  // a room with a fan or a television in it.
+                  // Kept to one word each: Mantine centres a mark label on its
+                  // tick, so anything longer hangs outside the panel's padding.
+                  marks={[
+                    { value: 1.4, label: "Noisy" },
+                    { value: 5, label: "Quiet" },
+                  ]}
+                  mb="lg"
+                />
+                <Text size="xs" c="dimmed">
+                  Turns never start? Drag right. The room keeps ending your turn? Drag left.
+                </Text>
+              </div>
             </Stack>
           </Collapse>
         </Paper>
@@ -437,6 +598,11 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                   {state.hint}
                 </Text>
               )}
+              {state?.settingsNote && (
+                <Text size="xs" c="dimmed" ta="center">
+                  {state.settingsNote}
+                </Text>
+              )}
               {state?.error && (
                 <Alert color="red" variant="light" w="100%" title="Call">
                   {state.error}
@@ -476,29 +642,88 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                       Redo
                     </Button>
                   </Tooltip>
-                  <Tooltip label="Save this conversation to the Library">
-                    <Button
-                      size="xs"
-                      variant="subtle"
-                      leftSection={<IconDeviceFloppy size={14} />}
-                      onClick={saveConversation}
-                      disabled={!state?.messages.length}
-                    >
-                      Save
-                    </Button>
-                  </Tooltip>
-                  <Tooltip label="Clear the conversation">
-                    <ActionIcon
-                      size="md"
-                      variant="subtle"
-                      color="gray"
-                      onClick={() => callSession.clearConversation()}
-                    >
-                      <IconTrash size={16} />
-                    </ActionIcon>
-                  </Tooltip>
                 </Group>
               )}
+
+              {/* Saving is available after hanging up too — that is when most
+                  people decide a conversation was worth keeping, and the
+                  transcript is deliberately left on screen for it. */}
+              <Group gap="xs" mt={inCall ? 0 : "xs"}>
+                <Tooltip label={savedId ? "Update the saved copy" : "Save this conversation"}>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    leftSection={<IconDeviceFloppy size={14} />}
+                    onClick={saveConversation}
+                    loading={saving}
+                    disabled={!state?.messages.length}
+                  >
+                    {savedId ? "Update" : "Save"}
+                  </Button>
+                </Tooltip>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  leftSection={<IconHistory size={14} />}
+                  onClick={() => setHistoryOpen((o) => !o)}
+                >
+                  Saved calls
+                </Button>
+                <Tooltip label="Clear the conversation">
+                  <ActionIcon
+                    size="md"
+                    variant="subtle"
+                    color="gray"
+                    disabled={!state?.messages.length}
+                    onClick={() => {
+                      callSession.clearConversation();
+                      setSavedId(null);
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
+
+              <Collapse expanded={historyOpen} w="100%">
+                <Paper withBorder p="xs" radius="sm" w="100%">
+                  {conversations.length === 0 ? (
+                    <Text size="xs" c="dimmed" ta="center" py="xs">
+                      Nothing saved yet. Calls are kept only when you press Save.
+                    </Text>
+                  ) : (
+                    <ScrollArea.Autosize mah={180}>
+                      <Stack gap={4}>
+                        {conversations.map((c) => (
+                          <Group key={c.id} gap="xs" wrap="nowrap" justify="space-between">
+                            <Box style={{ minWidth: 0, flex: 1 }}>
+                              <Text size="xs" fw={500} truncate>
+                                {c.name}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {c.turnCount} turns · {new Date(c.updatedAt).toLocaleString()}
+                              </Text>
+                            </Box>
+                            <Group gap={4} wrap="nowrap">
+                              <Button size="compact-xs" variant="light" onClick={() => loadConversation(c.id)}>
+                                {inCall ? "Continue" : "Load"}
+                              </Button>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="red"
+                                onClick={() => removeConversation(c.id)}
+                              >
+                                <IconTrash size={14} />
+                              </ActionIcon>
+                            </Group>
+                          </Group>
+                        ))}
+                      </Stack>
+                    </ScrollArea.Autosize>
+                  )}
+                </Paper>
+              </Collapse>
 
               {state?.stats && (state.stats.listenMs || state.stats.firstAudioMs) && (
                 <Text size="xs" c="dimmed">
@@ -515,6 +740,13 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
             </Title>
             <ScrollArea.Autosize mah={380} viewportRef={transcriptRef} offsetScrollbars type="auto">
               <Stack gap="xs">
+                {(state?.droppedTurns ?? 0) > 0 && (
+                  <Text size="xs" c="dimmed" ta="center">
+                    The {state.droppedTurns} oldest turn{state.droppedTurns === 1 ? "" : "s"} are no longer
+                    being sent to the model — it can still be read here, but the assistant no longer
+                    remembers it.
+                  </Text>
+                )}
                 {(state?.messages ?? []).length === 0 && !state?.streamingText && (
                   <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
                     Start the call and say something — or type below.
@@ -656,6 +888,7 @@ function CallOrb({
   // microphone is actually live before anyone says anything important.
   const ring = phase === "hearing" || phase === "listening" ? 6 + level * 26 : 6;
 
+  const pushToTalk = phase !== "idle" && phase !== "error" && !handsFree && !busy;
   const handlers =
     phase === "idle"
       ? { onClick: onStart }
@@ -663,30 +896,60 @@ function CallOrb({
         ? { onClick: onResume }
         : phase === "speaking" || phase === "preparing"
           ? { onClick: onInterrupt }
-        : !handsFree
+        : pushToTalk
           ? {
               onPointerDown: onPressToTalk,
               onPointerUp: onReleaseToTalk,
               onPointerLeave: onReleaseToTalk,
+              // Pointer events don't fire for a keyboard, and this is the
+              // primary control of the screen — Space/Enter on the focused
+              // button must hold the mic open just like the mouse does.
+              onKeyDown: (e: React.KeyboardEvent) => {
+                if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+                  e.preventDefault();
+                  onPressToTalk();
+                }
+              },
+              onKeyUp: (e: React.KeyboardEvent) => {
+                if (e.key === " " || e.key === "Enter") {
+                  e.preventDefault();
+                  onReleaseToTalk();
+                }
+              },
             }
           : {};
 
+  // A real <button>, not a styled div: this is the only control that matters on
+  // this screen, and as a div it had no focus ring, no accessible name and no
+  // keyboard route in at all.
+  const label = ORB_LABEL[phase] ?? PHASE_LABEL[phase];
+  const inert = phase === "listening" || phase === "hearing" ? handsFree : false;
+
   return (
     <Box
+      component="button"
+      type="button"
+      aria-label={label}
+      aria-busy={busy || undefined}
+      aria-live="polite"
+      disabled={disabled && phase === "idle"}
       {...handlers}
       style={{
         width: 132,
         height: 132,
+        padding: 0,
         borderRadius: "50%",
+        border: "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        cursor: disabled && phase === "idle" ? "not-allowed" : "pointer",
+        cursor: disabled && phase === "idle" ? "not-allowed" : inert ? "default" : "pointer",
         opacity: disabled && phase === "idle" ? 0.5 : 1,
         background: `var(--mantine-color-${color}-light)`,
         boxShadow: `0 0 0 ${ring}px var(--mantine-color-${color}-light)`,
         transition: "box-shadow 90ms linear, background 200ms",
         userSelect: "none",
+        touchAction: "manipulation",
       }}
     >
       {busy ? (

@@ -178,6 +178,9 @@ export type ChatEvent =
   | { type: "reasoning"; delta: string }
   /** A complete, speakable segment — the unit of playback for every client. */
   | { type: "speak"; index: number; text: string }
+  /** Older turns were dropped before sending ([call].context_messages). Sent
+   *  first, so the client can say so rather than let the model quietly forget. */
+  | { type: "context"; dropped: number; kept: number }
   | { type: "truncated" }
   | { type: "error"; message: string }
   | {
@@ -198,6 +201,29 @@ export interface WarmupResult {
   asrError?: string;
   /** base64 WAV of the filler phrase, synthesised in the selected voice. */
   filler?: string;
+}
+
+/** A saved call as listed by GET /api/conversations (no transcript). */
+export interface ConversationSummary {
+  id: string;
+  name: string;
+  turnCount: number;
+  preview: string;
+  chatModel: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A full saved call. `messages` is exactly what /api/chat takes back, which is
+ *  what makes one resumable rather than only readable. */
+export interface Conversation extends ConversationSummary {
+  messages: ChatMessage[];
+}
+
+/** Result of POST /api/server/unload. */
+export interface UnloadResult {
+  unloaded: string[];
+  not_found?: string[];
 }
 
 /** Per-model telemetry row. `kind` is tts | asr | ocr | chat. */

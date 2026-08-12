@@ -2,6 +2,8 @@ import type {
   CallConfig,
   ChatEvent,
   ChatMessage,
+  Conversation,
+  ConversationSummary,
   DiscoveredModel,
   Generation,
   MediaSupport,
@@ -13,6 +15,7 @@ import type {
   ServerStatus,
   Telemetry,
   TranscribeResult,
+  UnloadResult,
   UploadResult,
   WarmupResult,
 } from "./types";
@@ -189,6 +192,54 @@ export const api = {
     return fetch(`/api/readings/${id}`, { method: "DELETE" }).then((r) => asJson<{ ok: boolean }>(r));
   },
 
+  // --- saved conversations (written only when the user asks) ---
+  async getConversations(): Promise<ConversationSummary[]> {
+    const r = await asJson<{ conversations: ConversationSummary[] }>(await fetch("/api/conversations"));
+    return r.conversations;
+  },
+
+  getConversation(id: string): Promise<Conversation> {
+    return fetch(`/api/conversations/${id}`).then((r) => asJson<Conversation>(r));
+  },
+
+  createConversation(payload: {
+    name?: string;
+    messages: ChatMessage[];
+    chatModel?: string | null;
+  }): Promise<Conversation> {
+    return fetch("/api/conversations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then((r) => asJson<Conversation>(r));
+  },
+
+  updateConversation(
+    id: string,
+    patch: { name?: string; messages?: ChatMessage[]; chatModel?: string | null },
+  ): Promise<Conversation> {
+    return fetch(`/api/conversations/${id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then((r) => asJson<Conversation>(r));
+  },
+
+  deleteConversation(id: string): Promise<{ ok: boolean }> {
+    return fetch(`/api/conversations/${id}`, { method: "DELETE" }).then((r) =>
+      asJson<{ ok: boolean }>(r),
+    );
+  },
+
+  /** Drop models from VRAM. No ids = all of them. */
+  unloadModels(modelIds?: string[]): Promise<UnloadResult> {
+    return fetch("/api/server/unload", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(modelIds ? { modelIds } : {}),
+    }).then((r) => asJson<UnloadResult>(r));
+  },
+
   // --- OCR test bench ---
   async getOcrModels(): Promise<{ models: OcrModelInfo[]; default: string }> {
     return asJson<{ models: OcrModelInfo[]; default: string }>(await fetch("/api/ocr/models"));
@@ -306,6 +357,22 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     }).then((r) => asJson<WarmupResult>(r));
+  },
+
+  /** Record a completed turn's latency. Fire-and-forget: telemetry must never
+   *  cost a turn, so failures are swallowed rather than surfaced. */
+  callTurn(stats: {
+    totalMs: number;
+    listenMs?: number;
+    thinkMs?: number;
+    firstAudioMs?: number;
+  }): void {
+    void fetch("/api/call/turn", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(stats),
+      keepalive: true,
+    }).catch(() => {});
   },
 
   // --- telemetry ---

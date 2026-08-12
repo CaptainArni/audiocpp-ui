@@ -167,7 +167,7 @@ class _TemplateRefused(Exception):
 
 async def _stream_once(cfg: AppConfig, body: dict, model: str) -> AsyncIterator[dict]:
     url = f"{cfg.llama_base_url()}/v1/chat/completions"
-    segmenter = SentenceStreamer()
+    segmenter = SentenceStreamer(cfg.call_code_placeholder)
     text_parts: list[str] = []
     reasoning_chars = 0
     finish_reason = None

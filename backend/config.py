@@ -280,6 +280,17 @@ class AppConfig:
         return self._call.get("filler_text", "Moment…")
 
     @property
+    def call_code_placeholder(self) -> str:
+        """Spoken in place of a fenced code block. Blank = say nothing.
+
+        Reading code aloud is useless, but dropping it silently is worse: the
+        answer appears on screen and nothing comes out of the speakers, which is
+        indistinguishable from a broken voice. Ending it like a sentence is what
+        lets the segmenter cut after it.
+        """
+        return self._call.get("code_placeholder", "Codeblock ausgelassen.")
+
+    @property
     def call_lengths(self) -> list[dict[str, Any]]:
         """Response-length presets. max_tokens alone truncates mid-word, so each
         preset also carries the instruction that tells the model to be that long."""
@@ -377,6 +388,13 @@ class AppConfig:
     @property
     def readings_dir(self) -> Path:
         d = self.backend_dir / "readings"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def conversations_dir(self) -> Path:
+        """Saved voice-call transcripts. Written only when the user asks."""
+        d = self.backend_dir / "conversations"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

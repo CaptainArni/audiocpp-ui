@@ -70,6 +70,34 @@ async def registered_models() -> list[dict]:
     return r.json().get("data", [])
 
 
+async def unload_models(model_ids: "list[str] | None" = None) -> dict:
+    """Drop loaded models from VRAM. ``None`` unloads everything.
+
+    Models are registered lazily and, once loaded, are never released — which is
+    the right default for latency but means a box that has done TTS, ASR and OCR
+    is holding all three indefinitely (Higgs alone is 20.6 GB). Reloading is
+    transparent, so this only ever costs the next request its load time.
+
+    The server waits for in-flight inference on each target to finish first, so
+    this can take a moment while something is generating.
+    """
+    if model_ids:
+        url, body = f"{_base()}/v1/tasks/unload_models", {"model_ids": model_ids}
+    else:
+        url, body = f"{_base()}/v1/tasks/unload_all_models", None
+    async with httpx.AsyncClient(timeout=120) as c:
+        r = await c.post(url, json=body)
+    if r.status_code != 200:
+        raise AudiocppError(r.status_code, _read_error(r))
+    out = r.json()
+    freed = out.get("unloaded") or []
+    log_bus.emit(
+        "success" if freed else "info",
+        f"unloaded {len(freed)} model(s) from VRAM" + (f" · {', '.join(freed)}" if freed else " (none were loaded)"),
+    )
+    return out
+
+
 # Autoregressive TTS models occasionally never emit their end-of-generation
 # token and run until the per-request token budget is exhausted, which the
 # server reports as a 500. It is a sampling accident, not a bad request: the

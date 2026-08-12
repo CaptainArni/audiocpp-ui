@@ -1,0 +1,95 @@
+{
+  "_comment": [
+    "Cross-language fixture for the READING chunker: frontend/src/lib/chunk.ts and",
+    "the Android app's text/Chunker.kt must produce byte-identical output for every",
+    "case here, or the two clients generate different audio for the same reading.",
+    "",
+    "This file is the canonical copy. The Android repo carries a duplicate at",
+    "app/src/test/resources/chunking.json — they are separate git repos, so the",
+    "copy is the price of testing both. Change one, change the other.",
+    "",
+    "The streaming segmenter (backend/speakable.py) is deliberately NOT covered",
+    "here: it splits growing text for latency, not complete text for even sizes.",
+    "It has its own tests in tests/test_speakable.py.",
+    "",
+    "Constants both implementations share: MAX_CHARS 400, MIN_CHARS 120."
+  ],
+  "cases": [
+    {
+      "name": "empty input yields nothing",
+      "input": "",
+      "expected": []
+    },
+    {
+      "name": "whitespace only yields nothing",
+      "input": "   \n\n  \t ",
+      "expected": []
+    },
+    {
+      "name": "a short paragraph is one chunk",
+      "input": "Es war einmal ein kleines Haus am Rand des Waldes.",
+      "expected": ["Es war einmal ein kleines Haus am Rand des Waldes."]
+    },
+    {
+      "name": "internal whitespace is collapsed",
+      "input": "Das   Haus\tstand    dort.\nSeit vielen Jahren.",
+      "expected": ["Das Haus stand dort. Seit vielen Jahren."]
+    },
+    {
+      "name": "short paragraphs merge because both are runts",
+      "input": "Erster Absatz.\n\nZweiter Absatz.",
+      "expected": ["Erster Absatz. Zweiter Absatz."]
+    },
+    {
+      "name": "two long paragraphs stay separate",
+      "input": "Der erste Absatz ist lang genug, um nicht als Bruchstueck zu gelten, denn er enthaelt deutlich mehr als hundertzwanzig Zeichen und wird deshalb nicht mit dem naechsten verschmolzen.\n\nDer zweite Absatz ist ebenfalls lang genug, um eigenstaendig zu bleiben, denn auch er ueberschreitet die Grenze von hundertzwanzig Zeichen ohne jede Muehe und bleibt daher allein.",
+      "expected": [
+        "Der erste Absatz ist lang genug, um nicht als Bruchstueck zu gelten, denn er enthaelt deutlich mehr als hundertzwanzig Zeichen und wird deshalb nicht mit dem naechsten verschmolzen.",
+        "Der zweite Absatz ist ebenfalls lang genug, um eigenstaendig zu bleiben, denn auch er ueberschreitet die Grenze von hundertzwanzig Zeichen ohne jede Muehe und bleibt daher allein."
+      ]
+    },
+    {
+      "name": "a paragraph over MAX_CHARS splits on sentence boundaries",
+      "input": "Der Morgen war kalt und klar, und der Nebel lag noch tief in den Senken zwischen den Huegeln. Die Wanderer brachen frueh auf, weil der Weg bis zur naechsten Huette lang war und das Licht im Herbst schnell schwindet. Niemand sprach viel, denn jeder war mit den eigenen Gedanken beschaeftigt und mit dem gleichmaessigen Rhythmus der Schritte auf dem gefrorenen Boden. Erst am Mittag machten sie halt, an einer Stelle, wo der Pfad sich weitete und ein flacher Stein zum Sitzen einlud. Dort teilten sie das Brot und sprachen zum ersten Mal ueber das Ziel der Reise.",
+      "expected": [
+        "Der Morgen war kalt und klar, und der Nebel lag noch tief in den Senken zwischen den Huegeln. Die Wanderer brachen frueh auf, weil der Weg bis zur naechsten Huette lang war und das Licht im Herbst schnell schwindet. Niemand sprach viel, denn jeder war mit den eigenen Gedanken beschaeftigt und mit dem gleichmaessigen Rhythmus der Schritte auf dem gefrorenen Boden.",
+        "Erst am Mittag machten sie halt, an einer Stelle, wo der Pfad sich weitete und ein flacher Stein zum Sitzen einlud. Dort teilten sie das Brot und sprachen zum ersten Mal ueber das Ziel der Reise."
+      ]
+    },
+    {
+      "name": "a sentence ending in a closing quote still splits",
+      "input": "\"Wir gehen jetzt weiter\", sagte er, und niemand widersprach ihm, obwohl alle muede waren und der Weg noch weit vor ihnen lag. \"Das Licht haelt nicht ewig.\" Danach schwiegen sie wieder und folgten dem schmalen Pfad, der sich langsam den Hang hinaufwand, vorbei an knorrigen Baeumen und moosbedeckten Felsen, die aus dem Nebel auftauchten wie stumme Wachen an einer alten und laengst vergessenen Grenze zwischen zwei Koenigreichen.",
+      "expected": [
+        "\"Wir gehen jetzt weiter\", sagte er, und niemand widersprach ihm, obwohl alle muede waren und der Weg noch weit vor ihnen lag. \"Das Licht haelt nicht ewig.\"",
+        "Danach schwiegen sie wieder und folgten dem schmalen Pfad, der sich langsam den Hang hinaufwand, vorbei an knorrigen Baeumen und moosbedeckten Felsen, die aus dem Nebel auftauchten wie stumme Wachen an einer alten und laengst vergessenen Grenze zwischen zwei Koenigreichen."
+      ]
+    },
+    {
+      "name": "one over-long sentence breaks at commas",
+      "input": "Er ging weiter und weiter durch den dunklen Wald, vorbei an den alten Eichen und den verwitterten Steinen am Wegesrand, ueber die schmale Bruecke aus morschem Holz, die bei jedem Schritt bedenklich knarrte und schwankte, hinunter in das enge Tal, wo der Fluss laut zwischen den Felsen rauschte und die Luft kalt und feucht war, immer dem schmalen Pfad nach, der sich kaum noch vom Untergrund abhob, bis endlich in der Ferne ein einzelnes Licht sichtbar wurde und ihm neuen Mut gab",
+      "expected": [
+        "Er ging weiter und weiter durch den dunklen Wald, vorbei an den alten Eichen und den verwitterten Steinen am Wegesrand, ueber die schmale Bruecke aus morschem Holz, die bei jedem Schritt bedenklich knarrte und schwankte, hinunter in das enge Tal, wo der Fluss laut zwischen den Felsen rauschte und die Luft kalt und feucht war, immer dem schmalen Pfad nach, der sich kaum noch vom Untergrund abhob,",
+        "bis endlich in der Ferne ein einzelnes Licht sichtbar wurde und ihm neuen Mut gab"
+      ]
+    },
+    {
+      "name": "a heading is folded into the paragraph that follows it",
+      "input": "Kapitel Eins\n\nDer Regen hatte am Abend zuvor aufgehoert, und am Morgen roch die Luft nach nasser Erde und welkem Laub, wie es im Oktober immer der Fall ist, wenn der Sommer endgueltig vorbei ist.",
+      "expected": [
+        "Kapitel Eins Der Regen hatte am Abend zuvor aufgehoert, und am Morgen roch die Luft nach nasser Erde und welkem Laub, wie es im Oktober immer der Fall ist, wenn der Sommer endgueltig vorbei ist."
+      ]
+    },
+    {
+      "name": "leading and trailing blank lines are ignored",
+      "input": "\n\n\nEin einzelner Satz.\n\n\n",
+      "expected": ["Ein einzelner Satz."]
+    },
+    {
+      "name": "ellipsis ends a sentence",
+      "input": "Sie zoegerte einen langen Augenblick am Rand des Weges… Dann ging sie doch weiter, ohne sich noch einmal umzudrehen, weil sie wusste, dass ein Blick zurueck alles nur schwerer machen wuerde als es ohnehin schon war.",
+      "expected": [
+        "Sie zoegerte einen langen Augenblick am Rand des Weges… Dann ging sie doch weiter, ohne sich noch einmal umzudrehen, weil sie wusste, dass ein Blick zurueck alles nur schwerer machen wuerde als es ohnehin schon war."
+      ]
+    }
+  ]
+}

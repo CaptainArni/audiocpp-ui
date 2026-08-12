@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import mimetypes
+import re
 import threading
 import time
 import uuid
@@ -39,6 +40,7 @@ from proxy import (
     speech,
     speech_stream,
     transcribe,
+    unload_models,
 )
 
 # Windows serves .js as text/plain by default, which breaks ES module loading.
@@ -259,6 +261,31 @@ async def api_registered():
 async def api_telemetry():
     """Server state + per-model warm/throughput stats and recent generations."""
     return {"server": server_manager.status(), "metrics": metrics.snapshot()}
+
+
+@app.post("/api/server/unload")
+async def api_unload(request: Request):
+    """Free VRAM: drop loaded models. Body `{modelIds: [...]}`, or all if absent.
+
+    Models load lazily and are then held forever, which is right for latency and
+    wrong for a box that also runs a 27B chat model — before this the only way
+    out of that corner was restarting the whole audio server.
+    """
+    if server_manager.status()["state"] != "running":
+        return _fail(ValueError("the audio server is not running"))
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = body.get("modelIds") or None
+    if ids is not None and not isinstance(ids, list):
+        return _fail(ValueError("modelIds must be a list of model ids"))
+    try:
+        result = await unload_models([str(i) for i in ids] if ids else None)
+    except Exception as e:
+        return _fail(e)
+    metrics.on_unloaded(result.get("unloaded") or [])
+    return result
 
 
 # --- uploads (reference clips / ASR audio / video) -------------------------
@@ -731,9 +758,15 @@ async def api_chat(request: Request):
         system_prompt = cfg.call_system_prompt
     # Only the most recent turns are resent; the system prompt is always kept.
     trimmed = history[-cfg.call_context_messages :]
+    dropped = len(history) - len(trimmed)
     messages = chat.build_messages(trimmed, system_prompt, (length or {}).get("instruction", ""))
 
     async def gen():
+        # Say what was left out. Trimming used to be silent, so twenty turns in
+        # the assistant simply stopped knowing how the conversation started and
+        # nothing on screen explained why — the caller blames the model.
+        if dropped:
+            yield f"data: {json.dumps({'type': 'context', 'dropped': dropped, 'kept': len(trimmed)})}\n\n"
         try:
             async for event in chat.stream_chat(
                 model, messages, thinking=thinking, max_tokens=max_tokens
@@ -891,8 +924,16 @@ async def api_call_warmup(request: Request):
         speak_body.pop("ttsModel", None)
 
         async def warm_tts():
+            t0 = time.perf_counter()
             req, _ = _speech_request(speak_body)
             wav = await speech(req)
+            # Recorded like any other generation: warm-up *is* a request, and
+            # without this telemetry calls the model cold while it is sitting in
+            # VRAM — which also greys out the Free VRAM button that would
+            # release it.
+            metrics.record(
+                tts_model, "tts", (time.perf_counter() - t0) * 1000, detail="warm-up"
+            )
             out["filler"] = base64.b64encode(wav).decode("ascii")
 
         tasks.append(timed("tts", warm_tts()))
@@ -900,6 +941,7 @@ async def api_call_warmup(request: Request):
     asr_model = body.get("asrModel")
     if asr_model:
         async def warm_asr():
+            t0 = time.perf_counter()
             silence = cfg.uploads_dir / f"warmup-{uuid.uuid4().hex}.wav"
             try:
                 with wave.open(str(silence), "wb") as w:
@@ -910,6 +952,9 @@ async def api_call_warmup(request: Request):
                     # rejects it outright ("shorter than the first required chunk").
                     w.writeframes(b"\x00\x00" * 24000)  # 1.5 s
                 await transcribe({"model": asr_model, "audio": str(silence.resolve())})
+                metrics.record(
+                    asr_model, "asr", (time.perf_counter() - t0) * 1000, detail="warm-up"
+                )
             finally:
                 silence.unlink(missing_ok=True)
 
@@ -935,6 +980,34 @@ async def api_call_warmup(request: Request):
         + " · ".join(f"{k} {v} ms" for k, v in out.items() if k in ("tts", "asr", "chat") and v is not None),
     )
     return out
+
+
+@app.post("/api/call/turn")
+async def api_call_turn(request: Request):
+    """Record how long one completed turn took, end to end.
+
+    A turn is a pipeline, not a model — ASR, then chat, then TTS, plus the
+    caller's own pause — so it is recorded under its own name rather than
+    against any one of the three. Telemetry already had each stage separately,
+    which meant the Call tab could show the *last* turn's breakdown and nothing
+    could answer "is this getting slower?".
+
+    Fire-and-forget from the client: a failure here must never cost a turn.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False}
+    total = body.get("totalMs")
+    if not isinstance(total, (int, float)) or total <= 0:
+        return {"ok": False}
+    parts = [
+        f"{label} {round(body[key])} ms"
+        for key, label in (("listenMs", "heard"), ("thinkMs", "thought"), ("firstAudioMs", "first audio"))
+        if isinstance(body.get(key), (int, float))
+    ]
+    metrics.record("voice call", "call", float(total), detail=" · ".join(parts))
+    return {"ok": True}
 
 
 # --- OCR (page photo -> text, for the Android companion app) ----------------
@@ -972,12 +1045,25 @@ async def api_ocr(
 
 
 # --- saved readings (named sets of page texts, for the Android app) ---------
-def _reading_path(reading_id: str) -> Path:
-    """Resolve a reading file, rejecting any id that escapes readings_dir."""
-    p = (cfg.readings_dir / f"{reading_id}.json").resolve()
-    if p.parent != cfg.readings_dir.resolve():
-        raise ValueError("invalid reading id")
+# Ids are generated as `uuid4().hex`, but they arrive off the URL, so they are
+# whatever the caller sent. The character class is the real guard — it leaves no
+# separator, no `.` and nothing empty to build a path out of — and the resolved
+# parent check stays as the belt to its braces.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _store_path(directory: Path, item_id: str, what: str) -> Path:
+    """Resolve `<directory>/<id>.json`, rejecting anything that isn't a plain id."""
+    if not _SAFE_ID.match(str(item_id)):
+        raise ValueError(f"invalid {what} id")
+    p = (directory / f"{item_id}.json").resolve()
+    if p.parent != directory.resolve():
+        raise ValueError(f"invalid {what} id")
     return p
+
+
+def _reading_path(reading_id: str) -> Path:
+    return _store_path(cfg.readings_dir, reading_id, "reading")
 
 
 def _load_reading(reading_id: str) -> dict:
@@ -1090,6 +1176,150 @@ async def api_delete_reading(reading_id: str):
         return JSONResponse(status_code=404, content={"error": "reading not found"})
     p.unlink(missing_ok=True)
     log_bus.emit("info", f"reading deleted · {reading_id}")
+    return {"ok": True}
+
+
+# --- saved conversations (voice-call transcripts, resumable) ----------------
+# Deliberately never written automatically. A call is a conversation someone had
+# out loud in their own home; silently filing every one of them away is not a
+# feature, it is a surprise. Saving is a button, and nothing here runs unless it
+# is pressed.
+def _conversation_path(conversation_id: str) -> Path:
+    return _store_path(cfg.conversations_dir, conversation_id, "conversation")
+
+
+def _load_conversation(conversation_id: str) -> dict:
+    p = _conversation_path(conversation_id)
+    if not p.exists():
+        raise FileNotFoundError("conversation not found")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _clean_turns(raw) -> list[dict]:
+    """Keep only well-formed user/assistant turns, in order.
+
+    The stored shape is exactly what /api/chat takes back as `messages`, which
+    is what makes a saved call resumable rather than just readable.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("messages must be a list of {role, content}")
+    out: list[dict] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        content = str(m.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            out.append({"role": role, "content": content})
+    if not out:
+        raise ValueError("a conversation needs at least one turn")
+    return out
+
+
+def _conversation_summary(path: Path, doc: dict) -> dict:
+    messages = doc.get("messages") or []
+    first_user = next((m["content"] for m in messages if m.get("role") == "user"), "")
+    return {
+        "id": path.stem,
+        "name": doc.get("name") or path.stem,
+        "turnCount": len(messages),
+        # Enough to recognise it in a list without loading every transcript.
+        "preview": first_user[:120],
+        "chatModel": doc.get("chatModel"),
+        "createdAt": doc.get("createdAt") or path.stat().st_mtime * 1000,
+        "updatedAt": doc.get("updatedAt") or path.stat().st_mtime * 1000,
+    }
+
+
+@app.get("/api/conversations")
+async def api_conversations():
+    """List saved conversations as summaries (no transcripts), newest first."""
+    items = []
+    for p in cfg.conversations_dir.glob("*.json"):
+        try:
+            items.append(_conversation_summary(p, json.loads(p.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            continue
+    items.sort(key=lambda c: c["updatedAt"], reverse=True)
+    return {"conversations": items}
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def api_conversation(conversation_id: str):
+    try:
+        doc = _load_conversation(conversation_id)
+    except (ValueError, FileNotFoundError):
+        return JSONResponse(status_code=404, content={"error": "conversation not found"})
+    return {"id": conversation_id, **doc}
+
+
+@app.post("/api/conversations")
+async def api_create_conversation(request: Request):
+    try:
+        body = await request.json()
+        messages = _clean_turns(body.get("messages"))
+        name = str(body.get("name") or "").strip()
+        if not name:
+            # A call has no title, and demanding one before saving is friction at
+            # exactly the wrong moment. The first thing said is a decent name.
+            name = messages[0]["content"][:60].strip() or "Gespräch"
+        now = time.time() * 1000
+        conversation_id = uuid.uuid4().hex
+        doc = {
+            "name": name,
+            "messages": messages,
+            "chatModel": body.get("chatModel") or None,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        _conversation_path(conversation_id).write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        log_bus.emit("success", f'conversation saved · "{name}" ({len(messages)} turns, {conversation_id})')
+        return {"id": conversation_id, **doc}
+    except Exception as e:
+        log_bus.emit("error", f"saving conversation failed: {e}")
+        return _fail(e)
+
+
+@app.put("/api/conversations/{conversation_id}")
+async def api_update_conversation(conversation_id: str, request: Request):
+    """Update in place — used to re-save a conversation that was resumed."""
+    try:
+        try:
+            doc = _load_conversation(conversation_id)
+        except (ValueError, FileNotFoundError):
+            return JSONResponse(status_code=404, content={"error": "conversation not found"})
+        body = await request.json()
+        if "name" in body:
+            name = str(body.get("name") or "").strip()
+            if not name:
+                raise ValueError("name cannot be empty")
+            doc["name"] = name
+        if "messages" in body:
+            doc["messages"] = _clean_turns(body.get("messages"))
+        if "chatModel" in body:
+            doc["chatModel"] = body.get("chatModel") or None
+        doc["updatedAt"] = time.time() * 1000
+        _conversation_path(conversation_id).write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return {"id": conversation_id, **doc}
+    except Exception as e:
+        log_bus.emit("error", f"updating conversation failed: {e}")
+        return _fail(e)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def api_delete_conversation(conversation_id: str):
+    try:
+        p = _conversation_path(conversation_id)
+    except ValueError:
+        return JSONResponse(status_code=404, content={"error": "conversation not found"})
+    if not p.exists():
+        return JSONResponse(status_code=404, content={"error": "conversation not found"})
+    p.unlink(missing_ok=True)
+    log_bus.emit("info", f"conversation deleted · {conversation_id}")
     return {"ok": True}
 
 

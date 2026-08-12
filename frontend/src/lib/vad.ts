@@ -24,7 +24,19 @@ export interface VadOptions {
   minSpeechMs?: number;
   /** Stop capturing a single utterance past this, whatever the VAD thinks. */
   maxUtteranceSec?: number;
+  /**
+   * How far above the noise floor counts as speech. Lower = more sensitive.
+   *
+   * Adjustable because one number cannot suit both a quiet talker in a still
+   * room and a normal voice over a fan: too high and turns never start, too low
+   * and the room ends the turn for you. Defaults to {@link DEFAULT_SPEECH_FACTOR}.
+   */
+  speechFactor?: number;
 }
+
+/** The tuned default: high enough not to trigger on room tone, low enough for a
+ *  normal speaking voice at arm's length. */
+export const DEFAULT_SPEECH_FACTOR = 2.8;
 
 export interface VadCallbacks {
   /** ~50 Hz, 0..1, for the level ring. */
@@ -40,9 +52,6 @@ const FRAME = 1024;
 
 /** Frames above the floor needed to call it speech (debounces transients). */
 const ONSET_FRAMES = 3;
-
-/** How far above the noise floor counts as speech. */
-const SPEECH_FACTOR = 2.8;
 
 /** Absolute floor, so a dead-silent room doesn't make the gate infinitely touchy. */
 const MIN_THRESHOLD = 0.006;
@@ -65,11 +74,20 @@ export class MicVad {
   private noiseFloor = 0.01;
   private rate = 48000;
   private gated = false;
+  private speechFactor: number;
 
   constructor(
     private readonly opts: VadOptions,
     private readonly cb: VadCallbacks,
-  ) {}
+  ) {
+    this.speechFactor = opts.speechFactor ?? DEFAULT_SPEECH_FACTOR;
+  }
+
+  /** Retune mid-call. The whole point of the control is hearing the difference
+   *  while you talk, so this must not require restarting the call. */
+  setSpeechFactor(factor: number): void {
+    this.speechFactor = factor;
+  }
 
   get sampleRate(): number {
     return this.rate;
@@ -154,7 +172,7 @@ export class MicVad {
     if (this.gated) return;
 
     const framesPerSec = this.rate / FRAME;
-    const threshold = Math.max(MIN_THRESHOLD, this.noiseFloor * SPEECH_FACTOR);
+    const threshold = Math.max(MIN_THRESHOLD, this.noiseFloor * this.speechFactor);
     const loud = rms > threshold;
 
     if (!this.speaking) {

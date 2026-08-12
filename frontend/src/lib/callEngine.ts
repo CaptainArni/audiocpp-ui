@@ -49,6 +49,13 @@ export interface CallState {
   hint: string | null;
   stats: CallTurnStats;
   truncated: boolean;
+  /** Turns dropped from the last request because the context window is capped.
+   *  Zero until it actually happens, so a short call says nothing about it. */
+  droppedTurns: number;
+  /** "Applies from the next turn" — set when a setting changes mid-call and
+   *  cleared when that turn starts, so the change is acknowledged rather than
+   *  appearing to do nothing. */
+  settingsNote: string | null;
 }
 
 export interface CallSettings {
@@ -65,6 +72,8 @@ export interface CallSettings {
   /** Keep listening while the assistant speaks, so speaking over it interrupts. */
   bargeIn: boolean;
   fillerEnabled: boolean;
+  /** Mic sensitivity: how far above the noise floor counts as speech. */
+  speechFactor: number;
 }
 
 const ASR_RATE = 16000;
@@ -80,6 +89,8 @@ export const INITIAL_CALL_STATE: CallState = {
   hint: null,
   stats: {},
   truncated: false,
+  droppedTurns: 0,
+  settingsNote: null,
 };
 
 export class CallEngine {
@@ -124,26 +135,55 @@ export class CallEngine {
     return this.state;
   }
 
+  /**
+   * Apply a settings change to the call in progress.
+   *
+   * Every setting is live — there is nothing here you have to hang up to
+   * change. They differ only in *when* they bite, which is what
+   * `settingsNote` tells the caller:
+   *
+   * - **immediately**: mic sensitivity, barge-in (they configure the devices)
+   * - **from the next turn**: length, thinking, language (they are request
+   *   parameters, and the turn in flight was already sent)
+   * - **after a re-warm**: any model, or the voice (see below)
+   */
   updateSettings(settings: CallSettings): void {
     const prev = this.settings;
     const wasGated = !prev.bargeIn;
     this.settings = settings;
     // Turning barge-in on mid-call should open the mic immediately.
     if (wasGated && settings.bargeIn && this.state.phase === "speaking") this.vad?.setGated(false);
+    // Retuning the gate is only useful if you can hear the effect while talking.
+    if (prev.speechFactor !== settings.speechFactor) this.vad?.setSpeechFactor(settings.speechFactor);
 
     if (this.state.phase === "idle") return;
+
     // Warm-up ran once, against the models and voice chosen at that moment.
     // Switching any of them mid-call leaves the replacement cold — the next
     // reply then takes seconds — and leaves the filler clip in the *previous*
     // voice. Re-warm so a mid-call switch behaves like the start of a call.
-    const changed =
+    const rewarmNeeded =
       prev.ttsModel !== settings.ttsModel ||
       prev.asrModel !== settings.asrModel ||
       prev.chatModel !== settings.chatModel ||
       JSON.stringify(prev.voice) !== JSON.stringify(settings.voice);
+
+    // A change to how the *next* answer is generated cannot affect the one
+    // already streaming. Saying so is the difference between "it's applied" and
+    // "the switch does nothing".
+    const nextTurnOnly =
+      prev.length !== settings.length ||
+      prev.thinking !== settings.thinking ||
+      prev.language !== settings.language;
+    if (nextTurnOnly && this.answering) {
+      this.patch({ settingsNote: "Applies from your next turn." });
+    } else if (nextTurnOnly || rewarmNeeded) {
+      this.patch({ settingsNote: null });
+    }
+
     // Mid-turn the models are busy answering; warming would queue behind the
     // very request it is meant to speed up. Defer to the next quiet moment.
-    if (!changed) return;
+    if (!rewarmNeeded) return;
     if (this.abort) this.pendingRewarm = true;
     else void this.rewarm();
   }
@@ -198,6 +238,7 @@ export class CallEngine {
           hangoverMs: this.config.vadHangoverMs,
           prerollMs: this.config.vadPrerollMs,
           targetRate: ASR_RATE,
+          speechFactor: this.settings.speechFactor,
         },
         {
           onLevel: (level) => this.patch({ level }),
@@ -277,6 +318,9 @@ export class CallEngine {
     const trimmed = text.trim();
     if (!trimmed) return;
     this.cancelTurn();
+    // Nothing was heard, so the previous turn's listen time must not be carried
+    // over — it would be shown as this turn's and counted in its latency.
+    this.patch({ stats: {} });
     await this.runTurn(trimmed);
   }
 
@@ -292,7 +336,32 @@ export class CallEngine {
 
   clearConversation(): void {
     this.cancelTurn();
-    this.patch({ messages: [], streamingText: "", streamingReasoning: "", stats: {}, truncated: false });
+    this.patch({
+      messages: [],
+      streamingText: "",
+      streamingReasoning: "",
+      stats: {},
+      truncated: false,
+      droppedTurns: 0,
+    });
+    if (this.state.phase !== "idle") this.listen();
+  }
+
+  /**
+   * Replace the conversation with a saved one, so a call can be picked up where
+   * it was left. Works whether or not a call is up: loading before starting is
+   * the common case (choose one, then hit the orb).
+   */
+  loadConversation(messages: ChatMessage[]): void {
+    this.cancelTurn();
+    this.patch({
+      messages: [...messages],
+      streamingText: "",
+      streamingReasoning: "",
+      stats: {},
+      truncated: false,
+      droppedTurns: 0,
+    });
     if (this.state.phase !== "idle") this.listen();
   }
 
@@ -357,6 +426,8 @@ export class CallEngine {
       streamingReasoning: "",
       speakingText: "",
       truncated: false,
+      // The change the note referred to is now in effect.
+      settingsNote: null,
     });
     // The mic is deaf while the assistant answers unless barge-in is on.
     this.vad?.setGated(!this.settings.bargeIn);
@@ -423,6 +494,11 @@ export class CallEngine {
               this.clearFiller();
               speakSegment(event.text);
               break;
+            case "context":
+              // The window is capped, so the model no longer sees the start of
+              // a long call. Silent trimming makes that look like forgetfulness.
+              this.patch({ droppedTurns: event.dropped });
+              break;
             case "truncated":
               this.patch({ truncated: true });
               break;
@@ -456,6 +532,18 @@ export class CallEngine {
       this.patch({ phase: "error" });
       return;
     }
+    // Only completed turns are reported: an interrupted one measures how long
+    // someone waited before giving up, which would drag the average somewhere
+    // meaningless. Fire-and-forget — telemetry must never cost a turn.
+    const stats = this.state.stats;
+    api.callTurn({
+      // Measured from the moment you stopped talking, which includes the ASR —
+      // that wait is part of the turn even though it happened before `runTurn`.
+      totalMs: Date.now() - this.turnStartedAt + (stats.listenMs ?? 0),
+      listenMs: stats.listenMs,
+      thinkMs: stats.thinkMs,
+      firstAudioMs: stats.firstAudioMs,
+    });
     // Wait out whatever is still scheduled before reopening the mic, or the
     // hands-free VAD hears the assistant's own tail and answers itself.
     const remainingMs = this.player.queuedSeconds * 1000;

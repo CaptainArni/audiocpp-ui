@@ -1,0 +1,4 @@
+# Test-only dependencies. Install with:
+#   .venv\Scripts\python -m pip install -r requirements-dev.txt
+# then run:  .venv\Scripts\python -m pytest tests
+pytest>=8.0.0

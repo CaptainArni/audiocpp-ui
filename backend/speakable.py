@@ -63,13 +63,21 @@ def _delist(text: str) -> str:
     return "\n".join(lines)
 
 
-def to_speakable(text: str) -> str:
-    """Strip screen formatting so the text can be read aloud verbatim."""
+def to_speakable(text: str, code_placeholder: str = "") -> str:
+    """Strip screen formatting so the text can be read aloud verbatim.
+
+    ``code_placeholder`` is spoken in place of a fenced code block. Reading the
+    code itself aloud is useless, but so is dropping it silently: asking for a
+    snippet in a call then produced a visible answer and no sound at all, which
+    is indistinguishable from a broken TTS model. Empty = strip, as before.
+    """
     if not text:
         return ""
-    s = _FENCE.sub(" ", text)
-    # A stream can end mid-fence; drop the dangling opener rather than speaking code.
-    s = _FENCE_OPEN.sub(" ", s)
+    marker = f" {code_placeholder} " if code_placeholder else " "
+    s = _FENCE.sub(marker, text)
+    # A stream can end mid-fence; the dangling opener is still a code block, and
+    # gets the same treatment rather than being dropped.
+    s = _FENCE_OPEN.sub(marker, s)
     s = _IMAGE.sub(" ", s)
     s = _LINK.sub(r"\1", s)
     s = _BARE_URL.sub(" ", s)
@@ -122,6 +130,13 @@ def _ends_with_abbreviation(text: str) -> bool:
     # "3." / "1996." — a numbered list item or a year, not a sentence end.
     if word and word[-1].isdigit():
         return True
+    # A lone letter before the period. German sets these abbreviations *spaced*
+    # — "z. B.", "u. a.", "d. h." — so matching only the closed-up "z.b" form
+    # left the common case unguarded, and the assistant paused in the middle of
+    # "zum Beispiel". A single letter is almost never a sentence on its own, and
+    # the cost of being wrong is a missing pause rather than a mangled word.
+    if len(word) == 1 and word.isalpha():
+        return True
     return word in _ABBREVIATIONS
 
 
@@ -133,9 +148,10 @@ class SentenceStreamer:
     delta or until ``finish``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, code_placeholder: str = "") -> None:
         self._buf = ""
         self._emitted = 0
+        self._code_placeholder = code_placeholder
 
     @property
     def emitted(self) -> int:
@@ -151,7 +167,7 @@ class SentenceStreamer:
             if cut is None:
                 break
             head, self._buf = self._buf[:cut], self._buf[cut:].lstrip()
-            segment = to_speakable(head)
+            segment = to_speakable(head, self._code_placeholder)
             if not segment:
                 continue
             if len(segment) < MIN_CHARS and out:
@@ -163,7 +179,7 @@ class SentenceStreamer:
 
     def finish(self) -> list[str]:
         """Flush whatever is left once the stream has ended."""
-        rest = to_speakable(self._buf)
+        rest = to_speakable(self._buf, self._code_placeholder)
         self._buf = ""
         if not rest:
             return []
@@ -174,6 +190,26 @@ class SentenceStreamer:
         buf = self._buf
         if not buf:
             return None
+
+        # A code fence is opaque — never cut inside one. Code is full of periods
+        # and blank lines, so a cut that lands in the middle of a block both
+        # leaks source to the speaker ("print open paren add…") and leaves each
+        # remaining piece looking like a fresh dangling opener, so one snippet
+        # gets announced several times over.
+        fence = buf.find("```")
+        if fence == 0:
+            close = buf.find("```", 3)
+            # Still being written: hold. A block that never closes is flushed by
+            # `finish`, where the dangling opener is treated as code anyway.
+            if close < 0:
+                return None
+            return close + 3
+        # Everything in front of a block is complete by definition — nothing more
+        # will be inserted ahead of it — so it can be spoken now. Look for a
+        # natural boundary inside it first, and fall back to the fence itself.
+        forced = fence if fence > 0 else None
+        if forced is not None:
+            buf = buf[:forced]
 
         # A paragraph break is always a boundary, and a cheap one to spot.
         para = buf.find("\n\n")
@@ -197,4 +233,4 @@ class SentenceStreamer:
         if len(buf) >= MAX_CHARS:
             space = buf.rfind(" ", MIN_CHARS, MAX_CHARS)
             return space if space > 0 else MAX_CHARS
-        return None
+        return forced

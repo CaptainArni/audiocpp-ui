@@ -1,10 +1,34 @@
 import { useEffect, useState } from "react";
-import { Alert, Badge, Group, Paper, ScrollArea, Stack, Table, Text, Title } from "@mantine/core";
-import { IconInfoCircle } from "@tabler/icons-react";
+import {
+  ActionIcon,
+  Alert,
+  Badge,
+  Button,
+  Group,
+  Paper,
+  ScrollArea,
+  Stack,
+  Table,
+  Text,
+  Title,
+  Tooltip,
+} from "@mantine/core";
+import { IconFlame, IconInfoCircle } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import type { Telemetry } from "../types";
 
-const KIND_COLOR: Record<string, string> = { tts: "grape", asr: "blue", ocr: "teal" };
+const KIND_COLOR: Record<string, string> = {
+  tts: "grape",
+  asr: "blue",
+  ocr: "teal",
+  chat: "violet",
+  call: "cyan",
+};
+
+/** OCR runs on a separate llama.cpp server, and "voice call" is a pipeline
+ *  rather than a model — neither can be unloaded from here. */
+const UNLOADABLE = new Set(["tts", "asr"]);
 
 function fmtMs(ms?: number): string {
   if (ms == null) return "—";
@@ -22,6 +46,7 @@ function fmtAgo(at?: number): string {
 export function TelemetryPanel() {
   const [tel, setTel] = useState<Telemetry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unloading, setUnloading] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -41,6 +66,28 @@ export function TelemetryPanel() {
   const server = tel?.server;
   const models = tel?.metrics.models ?? [];
   const events = tel?.metrics.events ?? [];
+  const warmCount = models.filter((m) => m.warmed && UNLOADABLE.has(m.kind)).length;
+
+  // Models load lazily and are then held forever, which is the right default
+  // for latency and the wrong one for a box that also runs a large chat model.
+  // Reloading is transparent, so this only costs the next request its load time.
+  const unload = async (ids?: string[]) => {
+    setUnloading(ids?.[0] ?? "*");
+    try {
+      const res = await api.unloadModels(ids);
+      notifications.show({
+        color: "teal",
+        message: res.unloaded.length
+          ? `Freed ${res.unloaded.length} model${res.unloaded.length === 1 ? "" : "s"}: ${res.unloaded.join(", ")}`
+          : "Nothing was loaded.",
+      });
+      setTel(await api.getTelemetry());
+    } catch (e) {
+      notifications.show({ color: "red", title: "Could not unload", message: (e as Error).message });
+    } finally {
+      setUnloading(null);
+    }
+  };
 
   return (
     <Stack gap="md">
@@ -84,9 +131,32 @@ export function TelemetryPanel() {
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Title order={5} mb="sm">
-          Models
-        </Title>
+        <Group justify="space-between" mb="sm">
+          <Title order={5}>Models</Title>
+          <Tooltip
+            label={
+              warmCount
+                ? `Unload ${warmCount} loaded model${warmCount === 1 ? "" : "s"}. They reload automatically on the next request.`
+                : "Unload any loaded models. They reload automatically on the next request."
+            }
+          >
+            <Button
+              size="xs"
+              variant="light"
+              color="orange"
+              leftSection={<IconFlame size={14} />}
+              onClick={() => unload()}
+              loading={unloading === "*"}
+              // Only gated on the server being up. `warmed` is a proxy — it
+              // covers what *this* backend has served — so disabling on a zero
+              // count would sometimes refuse to free VRAM that really is held.
+              // The response says "Nothing was loaded" when there is nothing.
+              disabled={server?.state !== "running"}
+            >
+              Free VRAM
+            </Button>
+          </Tooltip>
+        </Group>
         {models.length === 0 ? (
           <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
             No activity yet. Generate speech, transcribe audio, or run OCR and per-model throughput shows up here.
@@ -104,6 +174,7 @@ export function TelemetryPanel() {
                   <Table.Th>Last time</Table.Th>
                   <Table.Th>Throughput</Table.Th>
                   <Table.Th>When</Table.Th>
+                  <Table.Th />
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -133,6 +204,21 @@ export function TelemetryPanel() {
                       <Text size="xs" c="dimmed">
                         {fmtAgo(m.lastAt)}
                       </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      {m.warmed && UNLOADABLE.has(m.kind) && (
+                        <Tooltip label={`Unload ${m.model} from VRAM`}>
+                          <ActionIcon
+                            size="sm"
+                            variant="subtle"
+                            color="orange"
+                            loading={unloading === m.model}
+                            onClick={() => unload([m.model])}
+                          >
+                            <IconFlame size={14} />
+                          </ActionIcon>
+                        </Tooltip>
+                      )}
                     </Table.Td>
                   </Table.Tr>
                 ))}

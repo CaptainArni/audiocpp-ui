@@ -16,6 +16,7 @@ backend/uploads/
 backend/generated/
 backend/voices/
 backend/readings/
+backend/conversations/
 backend/webview_storage/
 data/
 

@@ -13,10 +13,13 @@
 // explicit "End call" tears it down.
 
 import { CallEngine, INITIAL_CALL_STATE, type CallSettings, type CallState } from "./callEngine";
-import type { CallConfig } from "../types";
+import type { CallConfig, ChatMessage } from "../types";
 
 let engine: CallEngine | null = null;
 let state: CallState = INITIAL_CALL_STATE;
+/** A conversation loaded before the call was started, handed to the engine when
+ *  it is created. Picking one and *then* dialling is the natural order. */
+let pending: ChatMessage[] | null = null;
 const listeners = new Set<() => void>();
 
 function publish(next: CallState) {
@@ -47,9 +50,23 @@ export const callSession = {
    * from one, and without it the first reply is silent with no visible error.
    */
   async start(config: CallConfig, settings: CallSettings): Promise<void> {
-    if (!engine) engine = new CallEngine(config, settings, publish);
-    else engine.updateSettings(settings);
+    if (!engine) {
+      engine = new CallEngine(config, settings, publish);
+      if (pending) engine.loadConversation(pending);
+    } else {
+      engine.updateSettings(settings);
+    }
+    pending = null;
     await engine.start();
+  },
+
+  /** Resume a saved conversation. Valid before a call starts as well as during. */
+  loadConversation(messages: ChatMessage[]): void {
+    if (engine) engine.loadConversation(messages);
+    else {
+      pending = [...messages];
+      publish({ ...INITIAL_CALL_STATE, messages: [...messages] });
+    }
   },
 
   /** Push setup changes through; the engine re-warms when a model or voice moves. */
@@ -57,11 +74,14 @@ export const callSession = {
     engine?.updateSettings(settings);
   },
 
-  /** End the call and drop the engine, so the next one starts clean. */
+  /** End the call and drop the engine, so the next one starts clean.
+   *  The transcript stays on screen — it is the only chance to save it. */
   end(): void {
+    const transcript = state.messages;
     engine?.hangUp();
     engine = null;
-    publish(INITIAL_CALL_STATE);
+    pending = transcript.length ? [...transcript] : null;
+    publish({ ...INITIAL_CALL_STATE, messages: transcript });
   },
 
   interrupt: () => engine?.interrupt(),

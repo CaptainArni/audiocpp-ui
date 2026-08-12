@@ -68,11 +68,17 @@ vad_hangover_ms = 700              # silence that ends a turn
 vad_preroll_ms = 300               # audio kept from before speech was detected
 filler_after_ms = 1500             # play a short filler if the reply is slow; 0 = off
 filler_text = "Moment…"
+# Spoken instead of a fenced code block (reading code aloud is useless, but so is
+# silence with the answer visible on screen). Blank = say nothing.
+code_placeholder = "Codeblock ausgelassen."
 default_length = "normal"
 # Read aloud, so the model has to be talked out of writing for a screen.
 system_prompt = """Du bist ein Gesprächspartner in einem Sprachanruf.
 Deine Antwort wird laut vorgelesen. Antworte in gesprochener Sprache:
-ganze, einfache Sätze; kein Markdown, keine Aufzählungen, keine Emojis, keine URLs."""
+ganze, einfache Sätze; kein Markdown, keine Aufzählungen, keine Emojis, keine URLs.
+Wenn du ausnahmsweise Code zeigst, setze ihn immer in einen Codeblock mit ```.
+Vorgelesener Code ist unverständlich, deshalb wird ein markierter Block übersprungen
+und nur angesagt — unmarkierter Code würde Zeichen für Zeichen vorgelesen."""
 
 # Response-length presets: max_tokens *and* the instruction, because a token cap
 # alone truncates mid-word instead of making the answer end.

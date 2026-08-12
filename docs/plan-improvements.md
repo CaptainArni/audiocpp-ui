@@ -1,5 +1,33 @@
 # Plan — improvements for Studio and the Android app
 
+> **Status: all of §1–§4 are implemented.** §5 (Silero, the WebSocket realtime
+> path, offline conversation export, a llama-swap group for the chat model) is
+> untouched and still worth what it says. §6 is still explicitly not worth doing.
+>
+> Four things were found while building these that the plan did not predict, all
+> now fixed and pinned by tests:
+>
+> 1. **The segmenter cut inside fenced code.** A blank line *inside* a block
+>    looked like a paragraph boundary, so the cut landed mid-code: the second
+>    half was spoken as prose, and each remaining fragment looked like a fresh
+>    dangling opener, announcing one snippet several times over. A fence is now
+>    opaque.
+> 2. **Spaced German abbreviations were never guarded.** The list held `z.b`,
+>    but German sets these *spaced* — `z. B.`, `u. a.`, `d. h.` — so the common
+>    form fell through and the assistant paused in the middle of "zum Beispiel".
+> 3. **The system prompt banned code blocks**, which is why §4.6 looked like it
+>    worked in isolation and failed against a real model: told not to fence, the
+>    model wrote bare code as prose, and it was read out character by character.
+>    The prompt now *asks* for fences.
+> 4. **Warm-up never recorded metrics**, so telemetry called three freshly
+>    loaded models cold — which would have left §4.1's own Free VRAM button
+>    greyed out immediately after starting a call.
+>
+> Also hardened in passing: store ids arrive off the URL, and the resolved-parent
+> check alone accepted `""` and `"."`. Both stores now share `_store_path`, whose
+> character class is the real guard.
+
+
 Written after building the Call feature end to end. Everything below is grounded
 in something observed in this codebase, not a generic checklist; where an item is
 a *suspicion* rather than a confirmed defect it says so.

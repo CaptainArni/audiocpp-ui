@@ -32,6 +32,18 @@ class Metrics:
                 if m.get("kind") in ("tts", "asr"):
                     m["warmed"] = False
 
+    def on_unloaded(self, model_ids: list[str]) -> None:
+        """These models were dropped from VRAM, so they are cold again.
+
+        Without this the Telemetry tab keeps calling them warm right after the
+        Free VRAM button visibly emptied the card.
+        """
+        with self._lock:
+            for mid in model_ids:
+                m = self._models.get(mid)
+                if m is not None:
+                    m["warmed"] = False
+
     def record(
         self,
         model: str,
