@@ -114,7 +114,18 @@ def scan_models() -> list[dict]:
             if vad is not None:
                 extra_session["qwen3_asr.vad_model_path"] = str(vad)
 
-        def make(model_id: str, langs: list[str], vs: list[str], load: "dict | None", session: "dict | None") -> dict:
+        # Walking the tree is per-directory, not per-row: a music package is
+        # ~14 GB across two variants and would otherwise be measured twice.
+        size_mb = _dir_size_mb(entry)
+
+        def make(
+            model_id: str,
+            langs: list[str],
+            vs: list[str],
+            load: "dict | None",
+            session: "dict | None",
+            music: "dict | None" = None,
+        ) -> dict:
             session = {**(session or {}), **extra_session} or None
             return {
                 "defaultRequestOptions": (cat.default_request_options or None) if cat else None,
@@ -132,7 +143,10 @@ def scan_models() -> list[dict]:
                 "loadOptions": load,
                 "sessionOptions": session,
                 "timestamps": timestamps,
-                "sizeMB": _dir_size_mb(entry),
+                "sizeMB": size_mb,
+                # Only music (task "gen") models carry this; keeping it nested
+                # means a TTS row does not grow a dozen null music fields.
+                "music": music,
             }
 
         # pocket_tts loads exactly one language pack per model instance, so when
@@ -142,6 +156,32 @@ def scan_models() -> list[dict]:
                 lang_voices = _safetensor_basenames(entry / "languages" / lang / "embeddings")
                 opts = {"language": lang}
                 models.append(make(f"{entry.name}@{lang}", [lang], lang_voices, opts, dict(opts)))
+            continue
+
+        # A music package can hold several variants (ACE-Step: turbo + base)
+        # that are chosen by a *load* option, so each has to be its own
+        # registered model — the same shape as a pocket-tts language pack.
+        # Both are lazy, so only the variant actually used costs VRAM.
+        if cat and cat.variants:
+            for v in cat.variants:
+                models.append(
+                    make(
+                        f"{entry.name}@{v.id}",
+                        languages,
+                        voices,
+                        {**cat.load_options, **v.load_options} or None,
+                        {**cat.session_options, **v.session_options} or None,
+                        music={
+                            "variant": v.id,
+                            "variantLabel": v.label,
+                            "isDefault": v.default,
+                            "routes": list(cat.music_routes),
+                            "steps": v.steps,
+                            "guidanceScale": v.guidance_scale,
+                            "supportsGuidance": v.supports_guidance,
+                        },
+                    )
+                )
             continue
 
         models.append(

@@ -1,4 +1,5 @@
 import type {
+  AndroidApkInfo,
   CallConfig,
   ChatEvent,
   ChatMessage,
@@ -7,6 +8,12 @@ import type {
   DiscoveredModel,
   Generation,
   MediaSupport,
+  MusicEnhancement,
+  MusicEvent,
+  MusicModelsResponse,
+  MusicPromptsResponse,
+  MusicSpec,
+  MusicTake,
   OcrModelInfo,
   OcrResult,
   Reading,
@@ -17,21 +24,68 @@ import type {
   TranscribeResult,
   UnloadResult,
   UploadResult,
+  VramStatus,
+  VramTarget,
   WarmupResult,
 } from "./types";
 
-async function asJson<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const e = await res.json();
-      if (e?.error) msg = e.error;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(msg);
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const e = await res.json();
+    if (e?.error) return e.error as string;
+  } catch {
+    /* ignore */
   }
+  return `HTTP ${res.status}`;
+}
+
+async function asJson<T>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(await errorMessage(res));
   return (await res.json()) as T;
+}
+
+/**
+ * POST a JSON body and deliver the SSE events it streams back.
+ *
+ * Not `EventSource`: these endpoints take a request body, and EventSource is
+ * GET-only. `signal` is how a caller cancels — aborting closes the connection,
+ * which stops the work upstream rather than just ignoring its output.
+ */
+async function postSse<E>(
+  url: string,
+  payload: unknown,
+  onEvent: (event: E) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(await errorMessage(res));
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line; keep the partial tail.
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()) as E);
+        } catch {
+          /* a malformed frame is not worth killing the stream over */
+        }
+      }
+    }
+  }
 }
 
 export const api = {
@@ -253,19 +307,79 @@ export const api = {
     return fetch("/api/ocr", { method: "POST", body: fd }).then((r) => asJson<OcrResult>(r));
   },
 
+  /** What each inference server is holding in VRAM. Safe to poll. */
+  getVram(): Promise<VramStatus> {
+    return fetch("/api/vram").then((r) => asJson<VramStatus>(r));
+  },
+
+  freeVram(targets: VramTarget[]): Promise<{ freed: Record<string, string[]> }> {
+    return fetch("/api/vram/free", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ targets }),
+    }).then((r) => asJson<{ freed: Record<string, string[]> }>(r));
+  },
+
+  // --- music generation ---
+  getMusicModels(): Promise<MusicModelsResponse> {
+    return fetch("/api/music/models").then((r) => asJson<MusicModelsResponse>(r));
+  },
+
+  getMusicPrompts(family?: string): Promise<MusicPromptsResponse> {
+    const q = family ? `?family=${encodeURIComponent(family)}` : "";
+    return fetch(`/api/music/prompts${q}`).then((r) => asJson<MusicPromptsResponse>(r));
+  },
+
+  enhanceMusicPrompt(
+    payload: {
+      idea: string;
+      family?: string;
+      profileId?: string;
+      model?: string;
+      systemPrompt?: string;
+      withLyrics?: boolean;
+    },
+    signal?: AbortSignal,
+  ): Promise<MusicEnhancement> {
+    return fetch("/api/music/enhance", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    }).then((r) => asJson<MusicEnhancement>(r));
+  },
+
+  /** Render takes, delivering each as it finishes rather than all at the end. */
+  generateMusic(
+    spec: MusicSpec,
+    onEvent: (event: MusicEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return postSse<MusicEvent>("/api/music/generate", spec, onEvent, signal);
+  },
+
+  async getMusicTakes(): Promise<MusicTake[]> {
+    const r = await asJson<{ takes: MusicTake[] }>(await fetch("/api/music/takes"));
+    return r.takes;
+  },
+
+  deleteMusicTake(id: string): Promise<{ deleted: string }> {
+    return fetch(`/api/music/takes/${id}`, { method: "DELETE" }).then((r) =>
+      asJson<{ deleted: string }>(r),
+    );
+  },
+
+  musicTakeAudioUrl(id: string): string {
+    return `/api/music/takes/${id}/audio`;
+  },
+
   // --- voice call ---
   getCallConfig(): Promise<CallConfig> {
     return fetch("/api/call/config").then((r) => asJson<CallConfig>(r));
   },
 
-  /**
-   * Stream one assistant turn, calling `onEvent` for each SSE event.
-   *
-   * Not `EventSource`: this is a POST with a JSON body (the conversation), and
-   * EventSource is GET-only. `signal` is how a barge-in cancels the turn —
-   * aborting closes the connection, which stops llama.cpp generating.
-   */
-  async chatStream(
+  /** Stream one assistant turn. `signal` is how a barge-in cancels it. */
+  chatStream(
     payload: {
       model: string;
       messages: ChatMessage[];
@@ -276,43 +390,7 @@ export const api = {
     onEvent: (event: ChatEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-      signal,
-    });
-    if (!res.ok || !res.body) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        const e = await res.json();
-        if (e?.error) msg = e.error;
-      } catch {
-        /* ignore */
-      }
-      throw new Error(msg);
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      // SSE frames are separated by a blank line; keep the partial tail.
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        for (const line of frame.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          try {
-            onEvent(JSON.parse(line.slice(5).trim()) as ChatEvent);
-          } catch {
-            /* a malformed frame is not worth killing the turn over */
-          }
-        }
-      }
-    }
+    return postSse<ChatEvent>("/api/chat", payload, onEvent, signal);
   },
 
   /** One turn of speech in, transcript out (upload + ASR in one round trip). */
@@ -387,5 +465,10 @@ export const api = {
 
   clearGenerations(): Promise<{ removed: number }> {
     return fetch("/api/generations", { method: "DELETE" }).then((r) => asJson<{ removed: number }>(r));
+  },
+
+  // --- Android companion app ---
+  getAndroidApk(): Promise<AndroidApkInfo> {
+    return fetch("/api/android/apk/info").then((r) => asJson<AndroidApkInfo>(r));
   },
 };

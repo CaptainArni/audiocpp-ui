@@ -13,10 +13,10 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconFlame, IconInfoCircle } from "@tabler/icons-react";
+import { IconDeviceMobile, IconDownload, IconFlame, IconInfoCircle, IconRefresh } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
-import type { Telemetry } from "../types";
+import type { AndroidApkInfo, Telemetry } from "../types";
 
 const KIND_COLOR: Record<string, string> = {
   tts: "grape",
@@ -43,10 +43,16 @@ function fmtAgo(at?: number): string {
   return `${Math.round(s / 3600)}h ago`;
 }
 
+function fmtSize(bytes?: number): string {
+  if (!bytes) return "—";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function TelemetryPanel() {
   const [tel, setTel] = useState<Telemetry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unloading, setUnloading] = useState<string | null>(null);
+  const [apk, setApk] = useState<AndroidApkInfo | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -61,6 +67,15 @@ export function TelemetryPanel() {
       alive = false;
       clearInterval(id);
     };
+  }, []);
+
+  // Not on the 2 s poll: answering this walks every file under the phone app's
+  // app/src to date the build, which is far too much work to repeat forever for
+  // something that changes when *you* press build. Hence the refresh button.
+  const loadApk = () => api.getAndroidApk().then(setApk).catch(() => setApk(null));
+  useEffect(() => {
+    void loadApk();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const server = tel?.server;
@@ -269,6 +284,61 @@ export function TelemetryPanel() {
               ))}
             </Stack>
           </ScrollArea.Autosize>
+        )}
+      </Paper>
+
+      {/* The phone app, offered from the machine that already builds it.
+          Studio does not build the APK — Gradle does, from the IDE — so this
+          card's job is to say plainly how old the file is. Opening Studio on
+          the phone and tapping Download is the whole side-load path; over the
+          Cloudflare tunnel it works from outside the LAN too, and the download
+          sits behind Access like everything else here. */}
+      <Paper withBorder p="md" radius="md">
+        <Group justify="space-between" mb="sm">
+          <Group gap="xs">
+            <IconDeviceMobile size={18} />
+            <Title order={5}>Companion app</Title>
+          </Group>
+          <Tooltip label="Re-check the APK on disk">
+            <ActionIcon variant="subtle" color="gray" onClick={() => void loadApk()}>
+              <IconRefresh size={16} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+
+        {!apk?.available ? (
+          <Text size="sm" c="dimmed">
+            {apk?.reason ?? "Looking for a build…"}
+          </Text>
+        ) : (
+          <Stack gap="sm">
+            <Group gap="lg">
+              <Stat label="Built" value={fmtAgo(apk.builtAt)} />
+              <Stat label="Version" value={`${apk.versionName ?? "?"} (${apk.versionCode ?? "?"})`} />
+              <Stat label="Size" value={fmtSize(apk.sizeBytes)} />
+            </Group>
+            {apk.stale && (
+              <Alert color="yellow" variant="light" icon={<IconInfoCircle size={16} />}>
+                The app's source has changed since this APK was built
+                {apk.sourceChangedAt ? ` (${fmtAgo(apk.sourceChangedAt)})` : ""}. Rebuild it in
+                Android Studio, then refresh here.
+              </Alert>
+            )}
+            <Group gap="sm">
+              <Button
+                component="a"
+                href={apk.url}
+                size="xs"
+                leftSection={<IconDownload size={14} />}
+              >
+                Download APK
+              </Button>
+              <Text size="xs" c="dimmed">
+                Open this page on the phone and tap it — Android asks once for permission to
+                install from your browser.
+              </Text>
+            </Group>
+          </Stack>
         )}
       </Paper>
     </Stack>

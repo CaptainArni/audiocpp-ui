@@ -26,6 +26,9 @@ from fastapi.staticfiles import StaticFiles
 
 import chat
 import media
+import music
+import music_prompt
+import vram
 from catalog import lookup_catalog
 from config import AppConfig
 from logbus import log_bus
@@ -36,6 +39,9 @@ from process import server_manager
 from proxy import (
     STREAM_SAMPLE_RATE,
     AudiocppError,
+)
+from proxy import music as proxy_music  # `music` here is the local module
+from proxy import (
     registered_models,
     speech,
     speech_stream,
@@ -286,6 +292,32 @@ async def api_unload(request: Request):
         return _fail(e)
     metrics.on_unloaded(result.get("unloaded") or [])
     return result
+
+
+# --- VRAM across both inference servers ------------------------------------
+# /api/server/unload above frees audio.cpp only, from the Telemetry tab. These
+# two cover *both* servers from anywhere, because the workflow that needs them
+# spans the two: free the audio models, write a prompt with a big chat model,
+# free that, then generate. One GPU, two servers that each hold on by design.
+@app.get("/api/vram")
+async def api_vram():
+    return await vram.status()
+
+
+@app.post("/api/vram/free")
+async def api_vram_free(request: Request):
+    """Release VRAM on the named servers. Body `{targets: ["audiocpp","llama"]}`."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    targets = body.get("targets") or list(vram.TARGETS)
+    if not isinstance(targets, list):
+        return _fail(ValueError("targets must be a list"))
+    try:
+        return {"freed": await vram.free([str(t) for t in targets])}
+    except Exception as e:
+        return _fail(e)
 
 
 # --- uploads (reference clips / ASR audio / video) -------------------------
@@ -1044,6 +1076,214 @@ async def api_ocr(
         return _fail(e)
 
 
+# --- music generation ------------------------------------------------------
+# ACE-Step goes through audio.cpp's generic task route, not /v1/audio/speech,
+# and it does not stream: one request renders one finished track. Takes are kept
+# in their own store (backend/music/) rather than generated/, because a take is
+# a keeper that cannot be re-derived from anything but its own recorded
+# parameters, while generated/ is scratch that is re-rendered from stored text.
+@app.get("/api/music/models")
+async def api_music_models():
+    """Installed music models, one row per DiT variant, plus the tab's defaults.
+
+    A variant is chosen with a *load* option, so each is separately registered
+    (see catalog.ModelVariant) — the picker is choosing between registered
+    models, not setting a parameter.
+    """
+    cfg = AppConfig.get()
+    models = [m for m in scan_models() if m.get("task") == "gen" and m.get("known")]
+    ids = [m["id"] for m in models]
+    default = cfg.music_default_model if cfg.music_default_model in ids else ""
+    if not default:
+        default = next((m["id"] for m in models if (m.get("music") or {}).get("isDefault")), "")
+    return {
+        "models": [
+            {
+                "id": m["id"],
+                "label": m["dir"],
+                "family": m["family"],
+                "sizeMB": m["sizeMB"],
+                **(m.get("music") or {}),
+            }
+            for m in models
+        ],
+        "default": default or (ids[0] if ids else ""),
+        "maxTakes": cfg.music_max_takes,
+        "defaultDurationSec": cfg.music_default_duration_sec,
+    }
+
+
+@app.get("/api/music/prompts")
+async def api_music_prompts(family: str | None = None):
+    """Everything the enhance zone needs: profiles, their prompt, and the models.
+
+    Mirrors GET /api/ocr/models in shape (the client shows the prompt in an
+    editable box, so it has to receive the same text the backend would use) and
+    /api/call/config in scope — the llama.cpp model list comes along in the same
+    request rather than making the tab assemble itself from two. Chat models are
+    *discovered*, never configured: llama-swap already knows them.
+    """
+    cfg = AppConfig.get()
+    profiles = cfg.llama_music_prompts_for(family)
+    default = next((p["id"] for p in profiles if p["default"]), "")
+    try:
+        chat_models, chat_error = await chat.list_models(), None
+    except Exception as e:
+        # A stopped llama.cpp must not stop the tab from rendering: generation
+        # works without it, only the Enhance button does not.
+        chat_models, chat_error = [], str(e)
+    return {
+        "chatModels": chat_models,
+        "chatError": chat_error,
+        "prompts": [
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "family": p["family"],
+                "model": p["model"],
+                "systemPrompt": p["system_prompt"],
+            }
+            for p in profiles
+        ],
+        "default": default or (profiles[0]["id"] if profiles else ""),
+        "lyricsInstruction": {"on": music_prompt.LYRICS_ON, "off": music_prompt.LYRICS_OFF},
+    }
+
+
+@app.post("/api/music/enhance")
+async def api_music_enhance(request: Request):
+    """Expand a one-line idea into caption + lyrics + metadata fields."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _fail(ValueError("a JSON body is required"))
+    try:
+        return await music_prompt.enhance(
+            body.get("idea") or "",
+            family=body.get("family"),
+            profile_id=body.get("profileId"),
+            model=body.get("model"),
+            system_prompt=body.get("systemPrompt"),
+            with_lyrics=bool(body.get("withLyrics", True)),
+        )
+    except Exception as e:
+        log_bus.emit("error", f"music prompt failed: {e}")
+        return _fail(e)
+
+
+@app.post("/api/music/generate")
+async def api_music_generate(request: Request):
+    """Render one or more takes, streaming each as it lands (SSE).
+
+    Events: `{type:"start", takes, seeds}`, `{type:"take", index, take}` per
+    finished take, `{type:"done", rendered}`, `{type:"error", message}`. Errors
+    are events, not statuses, for the same reason as /api/chat: by the time the
+    second take fails the response headers are long gone.
+
+    Streaming is not about progress *within* a take — audio.cpp gives no
+    progress for a diffusion run — it is about not throwing away three finished
+    takes because the fourth failed.
+    """
+    cfg = AppConfig.get()
+    try:
+        spec = await request.json()
+    except Exception:
+        return _fail(ValueError("a JSON body is required"))
+    if not isinstance(spec, dict):
+        return _fail(ValueError("a JSON object is required"))
+
+    model = spec.get("model") or cfg.music_default_model
+    if not model:
+        return _fail(ValueError("model is required"))
+
+    try:
+        takes = max(1, min(int(spec.get("takes") or 1), cfg.music_max_takes))
+        seed = spec.get("seed")
+        seeds = music.resolve_seeds(int(seed) if seed not in (None, "") else None, takes)
+        audio_path = _upload_path(spec["uploadId"]) if spec.get("uploadId") else None
+        # Build the first request up front so a bad spec fails as a 400 with
+        # nothing rendered, instead of as an error event three minutes in.
+        first = music.build_request(spec, seed=seeds[0], audio_path=audio_path)
+    except Exception as e:
+        return _fail(e)
+
+    async def gen():
+        yield f"data: {json.dumps({'type': 'start', 'takes': takes, 'seeds': seeds})}\n\n"
+        rendered = 0
+        try:
+            for index, take_seed in enumerate(seeds):
+                req = first if index == 0 else music.build_request(
+                    spec, seed=take_seed, audio_path=audio_path
+                )
+                t0 = time.perf_counter()
+                wav, timing = await proxy_music(model, req)
+                wall = time.perf_counter() - t0
+                record = music.save_take(
+                    wav, spec=spec, request=req, model=model, timing=timing, seed=take_seed
+                )
+                rendered += 1
+                dur = record.get("durationSec")
+                metrics.record(
+                    model, "music", wall * 1000,
+                    throughput=(dur / wall) if (dur and wall > 0) else None,
+                    unit="× realtime",
+                    detail=f"{dur:.0f}s audio · seed {take_seed}" if dur else f"seed {take_seed}",
+                )
+                log_bus.emit(
+                    "success",
+                    f"music take {index + 1}/{takes} · {model} · seed {take_seed} · "
+                    f"{(dur or 0):.0f}s audio in {wall:.1f}s",
+                )
+                yield f"data: {json.dumps({'type': 'take', 'index': index, 'take': record}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            log_bus.emit("error", f"music generation failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'rendered': rendered})}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/music/takes")
+async def api_music_takes():
+    return {"takes": music.list_takes()}
+
+
+@app.get("/api/music/takes/{take_id}")
+async def api_music_take(take_id: str):
+    try:
+        return music.get_take(take_id)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "take not found"})
+    except Exception as e:
+        return _fail(e)
+
+
+@app.get("/api/music/takes/{take_id}/audio")
+async def api_music_take_audio(take_id: str):
+    try:
+        path = music.take_audio_path(take_id)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "take not found"})
+    except Exception as e:
+        return _fail(e)
+    return FileResponse(path, media_type="audio/wav", filename=f"{take_id}.wav")
+
+
+@app.delete("/api/music/takes/{take_id}")
+async def api_music_delete_take(take_id: str):
+    try:
+        if not music.delete_take(take_id):
+            return JSONResponse(status_code=404, content={"error": "take not found"})
+    except Exception as e:
+        return _fail(e)
+    log_bus.emit("info", f"music take deleted · {take_id}")
+    return {"deleted": take_id}
+
+
 # --- saved readings (named sets of page texts, for the Android app) ---------
 # Ids are generated as `uuid4().hex`, but they arrive off the URL, so they are
 # whatever the caller sent. The character class is the real guard — it leaves no
@@ -1361,6 +1601,85 @@ async def api_generation(name: str):
     if cfg.generated_dir.resolve() not in p.parents or not p.exists():
         return JSONResponse(status_code=404, content={"error": "not found"})
     return FileResponse(p)
+
+
+# --- Android companion APK -------------------------------------------------
+# Studio hands out the APK; it does not build it. Gradle (from the IDE or the
+# command line) writes app-debug.apk, and this reads exactly that file — so
+# "keep it current" means "build as usual", with no second place to remember.
+# Building here would drag JAVA_HOME, a minute-long job and its failure states
+# into a Python backend for no gain.
+#
+# What Studio *can* do honestly is say whether the file matches the source, so
+# `stale` compares it against the newest thing under app/src. Serving a build
+# from last week while claiming it is current would be worse than not offering
+# the download at all.
+def _android_apk_info() -> dict:
+    apk = cfg.android_apk_path
+    if apk is None:
+        return {"available": False, "reason": "Set [android].repo_dir in config.toml."}
+    if not apk.exists():
+        return {"available": False, "reason": f"No debug APK yet — build one ({apk})."}
+
+    st = apk.stat()
+    out: dict = {
+        "available": True,
+        "url": "/api/android/apk",
+        "sizeBytes": st.st_size,
+        "builtAt": st.st_mtime * 1000,
+        "fileName": apk.name,
+    }
+
+    # versionCode/versionName come from the metadata Gradle drops beside the
+    # APK, so nothing here has to parse a binary AndroidManifest. Both are hand
+    # -maintained in build.gradle.kts and do *not* change per build — which is
+    # why the UI leans on builtAt, and why these are shown but not trusted as
+    # "is this the newest one".
+    meta = apk.parent / "output-metadata.json"
+    if meta.exists():
+        try:
+            element = json.loads(meta.read_text("utf-8"))["elements"][0]
+            out["versionName"] = element.get("versionName")
+            out["versionCode"] = element.get("versionCode")
+        except (OSError, ValueError, KeyError, IndexError):
+            pass
+
+    root = cfg.android_repo_dir
+    newest = 0.0
+    if root is not None:
+        for pattern in ("app/src/**/*", "app/build.gradle.kts", "build.gradle.kts"):
+            for p in root.glob(pattern):
+                if p.is_file():
+                    newest = max(newest, p.stat().st_mtime)
+    if newest:
+        out["sourceChangedAt"] = newest * 1000
+        out["stale"] = newest > st.st_mtime
+    return out
+
+
+@app.get("/api/android/apk/info")
+async def api_android_apk_info():
+    return _android_apk_info()
+
+
+@app.get("/api/android/apk")
+async def api_android_apk():
+    apk = cfg.android_apk_path
+    if apk is None or not apk.exists():
+        return JSONResponse(status_code=404, content={"error": "no APK available"})
+    info = _android_apk_info()
+    version = info.get("versionName") or "dev"
+    stamp = time.strftime("%Y%m%d-%H%M", time.localtime(apk.stat().st_mtime))
+    # A name carrying version *and* build time, because the version alone
+    # repeats across builds and phones keep every download.
+    name = f"audiocpp-reader-{version}-{stamp}.apk"
+    log_bus.emit("info", f"serving Android APK · {name}")
+    return FileResponse(
+        apk,
+        media_type="application/vnd.android.package-archive",
+        filename=name,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # --- static SPA (must be registered last) ----------------------------------

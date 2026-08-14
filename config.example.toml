@@ -51,6 +51,24 @@ convert_timeout_sec = 1800
 uploads_retention_hours = 24
 asr_timeout_sec = 900
 
+# Music generation (Music tab). ACE-Step 1.5 runs through audio.cpp's generic
+# task route, so unlike TTS there is no streaming: one request renders one whole
+# track. Measured on an RTX 5090 with the turbo variant — 30 s of music in ~9 s
+# including a cold model load, 180 s in ~17 s — so the timeout below is slack,
+# not a working figure.
+[music]
+timeout_sec = 900
+# Registered model id preselected in the tab; blank = the first one found.
+# A music package exposes one id per DiT variant (see catalog.py): the turbo
+# variant is fast and ignores guidance, the base variant is where guidance_scale
+# actually acts.
+default_model = "Ace-Step1.5@turbo"
+# Takes render sequentially against one model, so this bounds how long a single
+# request holds the audio server, not just the size of the dropdown.
+max_takes = 8
+# Starting duration in the tab. -1 hands the choice to ACE-Step's planner.
+default_duration_sec = 120
+
 # The Call tab: speak to a llama.cpp model and hear the reply in a chosen voice.
 # Chat models are discovered from the llama.cpp server's /v1/models, so they are
 # not listed here — only what llama.cpp cannot tell us. Omit this whole section
@@ -110,6 +128,67 @@ timeout_sec = 180
 # Which OCR model the app selects by default — an `id` from [[llama.ocr_model]] below.
 default_ocr_model = "paddleocr-vl-1-6-gguf"
 
+# Music prompt profiles: turn a one-line idea into a full ACE-Step request via
+# the same llama.cpp server. Matched on the *music* model's family (see
+# catalog.py), so picking a different music model switches these rules with it —
+# a MiniMax-H3 profile would describe a scene and have no lyrics, key or BPM at
+# all. Surfaced by GET /api/music/prompts; the panel prefills an editable box.
+#
+# The contract is JSON, not prose. A prettier paragraph would still leave BPM,
+# key and lyrics to fill in by hand — and ACE-Step is explicit that tempo and key
+# must NOT appear in the caption, so they have to come back as separate fields.
+#
+# Keys:
+#   id / label / family   selection; `family` is what binds a profile to a model
+#   default               preferred profile for that family
+#   model                 optional llama.cpp model; blank = whatever the user picked
+#   temperature           0.8 leaves room to invent; 0 writes the same song twice
+#   max_tokens            a full lyric sheet plus metadata is ~600-1200 tokens
+#   send_thinking_kwarg / enable_thinking   as for the OCR profiles
+
+[[llama.music_prompt]]
+id = "ace-step-default"
+label = "ACE-Step 1.5"
+family = "ace_step"
+default = true
+temperature = 0.8
+max_tokens = 1600
+send_thinking_kwarg = true
+enable_thinking = false
+system_prompt = """You are a prompt engineer for ACE-Step 1.5, a text-to-music model. Turn the user's idea into a complete, production-ready request.
+
+Reply with a single JSON object and nothing else — no explanation, no code fence:
+{"title": string, "caption": string, "lyrics": string, "bpm": integer, "keyscale": string, "timesignature": string, "language": string, "durationSeconds": integer}
+
+CAPTION — the overall portrait of the music. English, comma-separated descriptors, roughly 15 to 40 words. Draw on several of these dimensions rather than one:
+- genre and style (synthwave, lo-fi hip-hop, chamber folk, 90s grunge)
+- emotion and atmosphere (melancholic, euphoric, intimate, menacing)
+- instruments (fingerpicked acoustic guitar, 808 drums, string section, Rhodes)
+- timbre and texture (warm, crisp, airy, punchy, lush, raw, polished)
+- era and production style (vintage soul, bedroom pop, studio-polished, live room)
+- vocal character (breathy female vocal, raspy male vocal, choir, no vocals)
+- rhythm feel (driving, laid-back, groovy, half-time)
+Be specific: "sad piano ballad with a breathy female vocal, close-mic'd, room reverb" beats "a sad song". Never contradict yourself — this model resolves conflicting instructions badly. NEVER write tempo, BPM, key or time signature into the caption; those are separate fields below.
+
+LYRICS — the song's script over time. Use structure tags on their own lines:
+[Intro] [Verse] [Pre-Chorus] [Chorus] [Bridge] [Outro] [Instrumental] [Guitar Solo] [Piano Interlude] [Build] [Drop] [Breakdown] [Fade Out]
+- At most one modifier per tag: "[Chorus - anthemic]" is right, "[Chorus - anthemic - stacked harmonies - epic - powerful]" is not.
+- 6 to 10 syllables per line, consistent within a section. The model aligns syllables to beats, so ragged line lengths produce ragged rhythm.
+- Separate sections with a blank line.
+- CAPITALS raise vocal intensity; (parentheses) become backing vocals.
+- Keep one core metaphor for the whole song and explore its facets. Avoid stacked adjectives, forced rhymes and lines too long to sing in one breath.
+- The lyrics must agree with the caption: instruments named in the caption are the ones that get solo tags, and the caption's emotion is the one the energy tags carry.
+
+METADATA:
+- bpm: 30-300. Slow 60-80, mid 90-120, fast 130-180; stay in 60-180 unless the idea demands otherwise.
+- keyscale: e.g. "Am", "C Major", "F# Minor". Common keys (C, G, D, Am, Em) are the most reliable.
+- timesignature: "4/4" unless the idea calls for "3/4" (waltz) or "6/8" (swing).
+- language: the language the lyrics are written in, as a code such as "en" or "de". Write lyrics in the language the user's idea implies; default to English.
+- durationSeconds: 30-60 for a clip, 120-240 for a full song. Longer runs risk repetition.
+- title: the song's name, 2 to 5 words. Evocative, not a description of the genre — "Citylight Dawn", not "Slow Hopeful Indie Folk Song". Lift an image from the lyrics where there is one. No quotes, no track numbers, no artist name.
+
+If the user's idea already fixes something (a tempo, a key, a language, a length), keep it exactly. Fill in everything they left open."""
+
 # Each [[llama.ocr_model]] is one selectable OCR model, surfaced to the phone and
 # the OCR test bench via GET /api/ocr/models. `model` is the name your llama.cpp
 # server (e.g. llama-swap) knows it by; the prompt and request-shaping flags differ
@@ -158,3 +237,11 @@ max_tokens = 2048
 # Reasoning models ramble into reasoning_content unless thinking is disabled.
 send_thinking_kwarg = true
 enable_thinking = false
+
+# --- Android companion app --------------------------------------------------
+# Checkout of the phone app, so Studio can hand out its debug APK for
+# side-loading (GET /api/android/apk, and the card on the Telemetry tab).
+# Studio never builds it — it serves whatever Gradle/Android Studio last wrote
+# to app/build/outputs/apk/debug/ and says how old that is. Blank = feature off.
+[android]
+repo_dir = ""

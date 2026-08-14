@@ -7,7 +7,7 @@ values. Unknown directories return None so the UI can ask the user to pick.
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
 
-Task = Literal["tts", "asr"]
+Task = Literal["tts", "asr", "gen"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,31 @@ class TokenBudget:
 
 
 @dataclass(frozen=True)
+class ModelVariant:
+    """One selectable variant inside a single downloaded model directory.
+
+    ACE-Step ships two DiT variants (turbo and base) in one package and picks
+    between them with a **load** option: audio.cpp's
+    ``ace_step/loader.cpp::selection_from_request`` reads a ``ModelLoadRequest``,
+    not a per-request one. A variant therefore cannot be switched per request —
+    each has to be registered as its own model, exactly like a pocket-tts
+    language pack. Both are lazy, so the unused one costs no VRAM.
+    """
+
+    id: str
+    label: str
+    load_options: dict[str, str] = field(default_factory=dict)
+    session_options: dict[str, str] = field(default_factory=dict)
+    default: bool = False
+    # Parameter defaults the UI should show for this variant. Turbo is
+    # distilled to ~8 steps and effectively ignores classifier-free guidance;
+    # base wants many more steps and is the variant guidance_scale acts on.
+    steps: Optional[int] = None
+    guidance_scale: Optional[float] = None
+    supports_guidance: bool = True
+
+
+@dataclass(frozen=True)
 class CatalogEntry:
     family: str
     task: Task
@@ -57,6 +82,12 @@ class CatalogEntry:
     default_request_options: dict[str, str] = field(default_factory=dict)
     # When set, /api/tts sizes max_tokens to the request text (see TokenBudget).
     token_budget: Optional[TokenBudget] = None
+    # task="gen" only: the audio.cpp task routes this family offers, and the
+    # variants the package contains. Both drive the Music tab; keeping them
+    # here rather than in the panel is what lets a second music family arrive
+    # without touching the frontend.
+    music_routes: tuple[str, ...] = ()
+    variants: tuple[ModelVariant, ...] = ()
 
 
 def _eq(name: str) -> Callable[[str], bool]:
@@ -153,6 +184,45 @@ _MATCHERS: list[tuple[Callable[[str], bool], CatalogEntry]] = [
     (_eq("VibeVoice-1.5B"), CatalogEntry(family="vibevoice", task="tts", clone=True)),
     (_starts("Kokoro"), CatalogEntry(family="kokoro_tts", task="tts", builtin_voice_kind="kokoro")),
     (_starts("MOSS-TTS"), CatalogEntry(family="moss_tts", task="tts", clone=True)),
+    # Music generation (task "gen" — audio.cpp's generic /v1/tasks/run route,
+    # not /v1/audio/speech; one request in, one finished WAV out, no streaming).
+    (
+        _starts("Ace-Step"),
+        CatalogEntry(
+            family="ace_step",
+            task="gen",
+            music_routes=(
+                "text2music",
+                "complete",
+                "lego",
+                "extract",
+                "cover",
+                "cover-nofsq",
+                "repaint",
+            ),
+            variants=(
+                ModelVariant(
+                    id="turbo",
+                    label="Turbo (fast, 8 steps)",
+                    load_options={"ace_step.dit_model_path": "acestep-v15-turbo"},
+                    default=True,
+                    steps=8,
+                    guidance_scale=1.0,
+                    # Turbo is guidance-distilled: upstream's tutorial marks
+                    # guidance_scale "Base model only". Offering the dial here
+                    # would be offering one that does nothing.
+                    supports_guidance=False,
+                ),
+                ModelVariant(
+                    id="base",
+                    label="Base (slower, guidance)",
+                    load_options={"ace_step.dit_model_path": "acestep-v15-base"},
+                    steps=30,
+                    guidance_scale=7.0,
+                ),
+            ),
+        ),
+    ),
     # ASR
     (_eq("Qwen3-ASR-0.6B"), CatalogEntry(family="qwen3_asr", task="asr")),
     # Nemotron 3.5 ASR streaming — the fast, streaming-capable ASR the Call tab

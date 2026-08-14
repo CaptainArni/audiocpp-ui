@@ -5,6 +5,8 @@ sent upstream, with long fields truncated) along with the upstream status,
 timing and payload size, so the log viewer shows what was actually run.
 """
 
+import base64
+import binascii
 import json
 import time
 from typing import AsyncIterator
@@ -186,6 +188,58 @@ async def speech_stream(body: dict) -> "AsyncIterator[bytes]":
         f"first chunk {first_ms:.0f} ms · {dt:.2f}s total" if first_ms is not None
         else f"← 200 /v1/audio/speech (stream) · empty in {dt:.2f}s",
     )
+
+
+async def music(model: str, request: dict) -> tuple[bytes, dict]:
+    """Generate music via the generic task route; returns (WAV bytes, timing).
+
+    Music generation has no OpenAI-shaped endpoint and no streaming: it goes
+    through ``POST /v1/tasks/run``, the framework's generic request route, and
+    comes back as one finished WAV encoded **base64 inside JSON**
+    (``task_result_json`` in audio.cpp's ``app/server/runtime.cpp``). That is why
+    this returns bytes rather than yielding them — there is nothing to yield
+    until the whole track exists.
+
+    Unlike ``speech`` there is no run-away retry. That retry exists because
+    autoregressive TTS models occasionally miss their end-of-generation token and
+    re-roll cheaply; a diffusion model runs a fixed number of steps and has no
+    such failure mode, so a retry would only spend another full render.
+    """
+    payload = {"model": model, "request": request}
+    log_bus.emit("debug", f"→ POST /v1/tasks/run (music) {_compact({'model': model, **request})}")
+    t0 = time.perf_counter()
+    async with httpx.AsyncClient(timeout=AppConfig.get().music_timeout_sec) as c:
+        r = await c.post(f"{_base()}/v1/tasks/run", json=payload)
+    dt = time.perf_counter() - t0
+    if r.status_code != 200:
+        msg = _read_error(r)
+        log_bus.emit("error", f"← {r.status_code} /v1/tasks/run (music) in {dt:.2f}s: {msg}")
+        raise AudiocppError(r.status_code, msg)
+
+    try:
+        out = r.json()
+    except ValueError as e:
+        raise AudiocppError(502, f"audio server returned non-JSON for a music request: {e}") from e
+    encoded = out.get("audio")
+    if not encoded:
+        # A gen model that produced no audio is an upstream failure with a 200
+        # on it — surface it as one rather than writing a zero-byte WAV.
+        raise AudiocppError(502, "audio server returned no audio for the music request")
+    try:
+        wav = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise AudiocppError(502, f"audio server returned undecodable audio: {e}") from e
+
+    timing = out.get("timing") or {}
+    timing.setdefault("wall_ms", dt * 1000)
+    audio_ms = timing.get("audio_duration_ms")
+    log_bus.emit(
+        "debug",
+        f"← 200 /v1/tasks/run (music) · {len(wav)} bytes"
+        + (f" · {audio_ms / 1000:.1f}s audio" if audio_ms else "")
+        + f" in {dt:.2f}s",
+    )
+    return wav, timing
 
 
 async def transcribe_stream(body: dict, audio_path: str) -> "AsyncIterator[dict]":

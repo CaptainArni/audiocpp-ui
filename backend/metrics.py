@@ -28,8 +28,9 @@ class Metrics:
         with self._lock:
             self._server_epoch = time.time()
             for m in self._models.values():
-                # OCR runs on a separate llama.cpp server, so leave those warm.
-                if m.get("kind") in ("tts", "asr"):
+                # OCR and chat run on a separate llama.cpp server, so leave
+                # those warm; everything the audio server hosts went cold.
+                if m.get("kind") in ("tts", "asr", "music"):
                     m["warmed"] = False
 
     def on_unloaded(self, model_ids: list[str]) -> None:
@@ -75,6 +76,16 @@ class Metrics:
                     "detail": detail,
                 }
             )
+
+    def warm_models(self) -> set[str]:
+        """Models that have served a request since they were last unloaded.
+
+        For audio.cpp this doubles as the only reliable residency signal Studio
+        has — see the note in vram.py about its `loaded` flag never being
+        cleared on unload.
+        """
+        with self._lock:
+            return {k for k, v in self._models.items() if v.get("warmed")}
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

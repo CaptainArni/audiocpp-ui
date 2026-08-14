@@ -207,6 +207,65 @@ class AppConfig:
                 return m
         return models[0]
 
+    # --- Music prompt profiles (idea -> caption/lyrics/metadata via llama.cpp) ---
+    # Keyed by the *music* model's family, not by an id the client has to know:
+    # selecting an ACE-Step model has to bring ACE-Step's prompting rules with it,
+    # and a family that takes a plain scene description with no lyrics, key or BPM
+    # has to bring completely different ones. Matching on family is what makes
+    # that switch automatic instead of a mapping the frontend must maintain.
+    @property
+    def llama_music_prompts(self) -> list[dict[str, Any]]:
+        raw = self._data.get("llama", {}).get("music_prompt", [])
+        out: list[dict[str, Any]] = []
+        for e in raw:
+            family = e.get("family")
+            system_prompt = (e.get("system_prompt") or "").strip()
+            if not family or not system_prompt:
+                continue
+            pid = e.get("id") or family
+            out.append(
+                {
+                    "id": pid,
+                    "label": e.get("label", pid),
+                    "family": family,
+                    "default": bool(e.get("default", False)),
+                    # Blank = use whatever chat model the client picked.
+                    "model": e.get("model", ""),
+                    "system_prompt": system_prompt,
+                    "temperature": float(e.get("temperature", 0.8)),
+                    "max_tokens": int(e.get("max_tokens", 1400)),
+                    "send_thinking_kwarg": e.get("send_thinking_kwarg", True),
+                    "enable_thinking": e.get("enable_thinking", False),
+                }
+            )
+        return out
+
+    def llama_music_prompts_for(self, family: str | None) -> list[dict[str, Any]]:
+        profiles = self.llama_music_prompts
+        if not family:
+            return profiles
+        return [p for p in profiles if p["family"] == family]
+
+    def llama_music_prompt_by_id(
+        self, profile_id: str | None, family: str | None = None
+    ) -> dict[str, Any] | None:
+        """Resolve a profile by id, then by the family's default, then anything.
+
+        An id wins even when it disagrees with ``family`` — the caller asked for
+        that profile explicitly, and silently substituting another one would make
+        an edited prompt appear not to take effect.
+        """
+        profiles = self.llama_music_prompts
+        if profile_id:
+            for p in profiles:
+                if p["id"] == profile_id:
+                    return p
+        candidates = self.llama_music_prompts_for(family)
+        for p in candidates:
+            if p["default"]:
+                return p
+        return candidates[0] if candidates else None
+
     # --- Voice call (Call tab: mic -> ASR -> llama.cpp chat -> TTS) ---
     # Chat models are *discovered* from the llama.cpp server's /v1/models rather
     # than declared here (unlike the OCR profiles): llama-swap already knows every
@@ -364,6 +423,66 @@ class AppConfig:
         """How long to wait on the audio server for one transcription."""
         return float(self._data.get("media", {}).get("asr_timeout_sec", 900))
 
+    # --- Music generation (Music tab: prompt -> ACE-Step -> a saved track) ---
+    @property
+    def _music(self) -> dict[str, Any]:
+        return self._data.get("music", {})
+
+    @property
+    def music_timeout_sec(self) -> float:
+        """How long to wait on the audio server for one rendered take.
+
+        Measured on this machine (RTX 5090, ACE-Step turbo): 30 s of music in
+        ~9 s including a cold model load, 180 s in ~17 s. The default is wide
+        enough for the base variant at high step counts and a long duration.
+        """
+        return float(self._music.get("timeout_sec", 900))
+
+    @property
+    def music_default_model(self) -> str:
+        """Registered model id preselected in the Music tab; blank = first found."""
+        return self._music.get("default_model", "")
+
+    @property
+    def music_max_takes(self) -> int:
+        """Cap on takes per generate request.
+
+        Takes are rendered sequentially against one model, so this is a bound on
+        how long a single request can hold the audio server — not just a UI
+        limit.
+        """
+        return max(1, int(self._music.get("max_takes", 8)))
+
+    @property
+    def music_default_duration_sec(self) -> float:
+        """Blank/-1 lets ACE-Step's planner choose the length itself."""
+        return float(self._music.get("default_duration_sec", 120))
+
+    # --- Android companion app ---
+    @property
+    def android_repo_dir(self) -> Path | None:
+        """Checkout of the companion app, so Studio can hand out its APK.
+
+        Blank (the default) turns the feature off rather than guessing: the
+        sibling layout in the README is a convention, not something to assume
+        about someone else's disk. A relative path is taken from the project
+        root, which is where ``../audiocpp-android`` actually points.
+        """
+        raw = str(self._data.get("android", {}).get("repo_dir", "")).strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        return p if p.is_absolute() else (self.backend_dir.parent / p).resolve()
+
+    @property
+    def android_apk_path(self) -> Path | None:
+        """The debug APK Gradle writes — the same file Android Studio produces,
+        so a build from the IDE is picked up with nothing else to do."""
+        root = self.android_repo_dir
+        if root is None:
+            return None
+        return root / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
+
     # --- Paths (all relative to backend/) ---
     @property
     def backend_dir(self) -> Path:
@@ -401,6 +520,21 @@ class AppConfig:
     @property
     def generated_dir(self) -> Path:
         d = self.backend_dir / "generated"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def music_dir(self) -> Path:
+        """Rendered music takes — deliberately *not* generated/.
+
+        Speech output in generated/ is scratch: it is re-rendered on demand from
+        text that is stored elsewhere. A music take is the opposite — it cannot
+        be reproduced from anything but its own recorded parameters, and it is
+        two orders of magnitude larger (a 3-minute track is ~33 MB against a few
+        hundred kB for a sentence). Keeping the two apart is what lets generated/
+        stay disposable while takes are kept.
+        """
+        d = self.backend_dir / "music"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

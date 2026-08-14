@@ -1,4 +1,5 @@
-export type Task = "tts" | "asr";
+/** "gen" is music/audio generation — audio.cpp's own task string for it. */
+export type Task = "tts" | "asr" | "gen";
 
 export interface DiscoveredModel {
   id: string;
@@ -20,6 +21,8 @@ export interface DiscoveredModel {
   defaultRequestOptions?: Record<string, string>;
   /** ASR only: word timestamps available (forced aligner installed). */
   timestamps?: boolean;
+  /** task "gen" only — see MusicModel. Null on every speech model. */
+  music?: MusicModelTraits | null;
   sizeMB: number;
 }
 
@@ -129,6 +132,142 @@ export interface OcrResult {
   truncated: boolean;
 }
 
+// --- music generation ------------------------------------------------------
+
+/**
+ * What one music model variant can do.
+ *
+ * A package like ACE-Step ships two DiT variants and picks between them with a
+ * *load* option, so each is registered as its own model and appears as its own
+ * row — the picker chooses a model, it does not set a parameter.
+ */
+export interface MusicModelTraits {
+  variant: string;
+  variantLabel: string;
+  isDefault: boolean;
+  routes: string[];
+  /** Sensible step count for this variant (turbo is distilled to ~8). */
+  steps: number | null;
+  guidanceScale: number | null;
+  /** Turbo is guidance-distilled and ignores the scale, so the panel hides it
+   *  rather than offering a dial that does nothing. */
+  supportsGuidance: boolean;
+}
+
+export interface MusicModel extends MusicModelTraits {
+  id: string;
+  label: string;
+  family: string;
+  sizeMB: number;
+}
+
+export interface MusicModelsResponse {
+  models: MusicModel[];
+  default: string;
+  maxTakes: number;
+  defaultDurationSec: number;
+}
+
+/** An enhancement profile: the system prompt that turns an idea into a request.
+ *  Bound to a music *family*, so switching model switches the rules with it. */
+export interface MusicPromptProfile {
+  id: string;
+  label: string;
+  family: string;
+  model: string;
+  systemPrompt: string;
+}
+
+export interface MusicPromptsResponse {
+  chatModels: ChatModelInfo[];
+  /** Non-null when llama.cpp is unreachable. Generation still works; only
+   *  Enhance does not. */
+  chatError: string | null;
+  prompts: MusicPromptProfile[];
+  default: string;
+  lyricsInstruction: { on: string; off: string };
+}
+
+/** ACE-Step's internal planner LM — *not* the llama.cpp model that writes the
+ *  caption. It infers metadata and semantic codes inside the music model. */
+export interface MusicPlannerParams {
+  temperature?: number;
+  cfgScale?: number;
+  topK?: number;
+  topP?: number;
+  repetitionPenalty?: number;
+}
+
+/** One generation request, and — saved verbatim in a take's sidecar — the only
+ *  thing that makes a good result reproducible later. */
+export interface MusicSpec {
+  model: string;
+  route?: string;
+  title?: string;
+  caption: string;
+  lyrics?: string;
+  language?: string;
+  durationSeconds?: number;
+  steps?: number;
+  guidanceScale?: number;
+  seed?: number | null;
+  takes?: number;
+  bpm?: number | null;
+  keyscale?: string;
+  timeSignature?: string;
+  negativePrompt?: string;
+  samplerMode?: string;
+  retakeSeed?: number;
+  retakeVariance?: number;
+  planner?: MusicPlannerParams;
+  /** Audio-conditioned routes (cover, repaint, extract, lego, complete). */
+  uploadId?: string;
+  trackName?: string;
+  repaintStart?: number;
+  repaintEnd?: number;
+  repaintMode?: string;
+  repaintStrength?: number;
+  audioCoverStrength?: number;
+  coverNoiseStrength?: number;
+}
+
+/** A rendered take, as stored beside its WAV. */
+export interface MusicTake {
+  id: string;
+  createdAt: number;
+  model: string;
+  seed: number;
+  title: string;
+  sizeBytes: number;
+  durationSec: number | null;
+  sampleRate: number | null;
+  channels: number | null;
+  spec: MusicSpec;
+  /** What actually went upstream — the tie-breaker when a result and the spec
+   *  seem to disagree. */
+  request: Record<string, unknown>;
+  timing: { wall_ms?: number; audio_duration_ms?: number; rtf?: number };
+}
+
+/** One event from the POST /api/music/generate SSE stream. Takes arrive one at
+ *  a time so a failure on the fourth does not discard the first three. */
+export type MusicEvent =
+  | { type: "start"; takes: number; seeds: number[] }
+  | { type: "take"; index: number; take: MusicTake }
+  | { type: "error"; message: string }
+  | { type: "done"; rendered: number };
+
+/** What the enhancer made of an idea. `parsed` is false when the model did not
+ *  answer with JSON and its whole reply became the caption. */
+export interface MusicEnhancement {
+  fields: Partial<MusicSpec> & { caption: string };
+  raw: string;
+  model: string;
+  profile: string;
+  seconds: number;
+  parsed: boolean;
+}
+
 // --- voice call ------------------------------------------------------------
 
 /** A chat model the llama.cpp server can serve (GET /api/call/config). */
@@ -226,6 +365,22 @@ export interface UnloadResult {
   not_found?: string[];
 }
 
+/** One inference server's GPU residency (GET /api/vram).
+ *
+ *  `loaded` is what the server itself reports holding — not what Studio has
+ *  served, which is a different question and goes stale across restarts. */
+export interface VramServer {
+  running: boolean;
+  loaded: string[];
+}
+
+export interface VramStatus {
+  audiocpp: VramServer;
+  llama: VramServer;
+}
+
+export type VramTarget = "audiocpp" | "llama";
+
 /** Per-model telemetry row. `kind` is tts | asr | ocr | chat. */
 export interface TelemetryModel {
   model: string;
@@ -255,4 +410,24 @@ export interface Telemetry {
     events: TelemetryEvent[];
     serverEpoch: number;
   };
+}
+
+/**
+ * The companion app's debug APK, as Studio found it on disk.
+ *
+ * `versionName` is hand-maintained in build.gradle.kts and repeats across
+ * builds, so `builtAt` — and `stale`, which compares it against the newest file
+ * under app/src — is what actually answers "is this the build I just made?".
+ */
+export interface AndroidApkInfo {
+  available: boolean;
+  reason?: string;
+  url?: string;
+  fileName?: string;
+  sizeBytes?: number;
+  builtAt?: number;
+  versionName?: string;
+  versionCode?: number;
+  sourceChangedAt?: number;
+  stale?: boolean;
 }

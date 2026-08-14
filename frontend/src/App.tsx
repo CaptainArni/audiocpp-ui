@@ -19,6 +19,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconMicrophone,
+  IconMusic,
   IconPhone,
   IconScan,
   IconUsers,
@@ -31,11 +32,13 @@ import { ServerControlBar } from "./components/ServerControlBar";
 import { TtsPanel } from "./components/TtsPanel";
 import { AsrPanel } from "./components/AsrPanel";
 import { CallPanel } from "./components/CallPanel";
+import { MusicPanel } from "./components/MusicPanel";
 import { VoicesPanel } from "./components/VoicesPanel";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { OcrPanel } from "./components/OcrPanel";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { LogPanel } from "./components/LogPanel";
+import { VramMenu } from "./components/VramMenu";
 import logo from "./assets/logo.png";
 
 const STATE_COLOR: Record<ServerRunState, string> = {
@@ -125,12 +128,15 @@ export function App() {
             <img src={logo} alt="" height={34} style={{ display: "block" }} />
             <Title order={4}>audio.cpp Studio</Title>
             <Text size="sm" c="dimmed">
-              local TTS · voice cloning · ASR
+              local TTS · voice cloning · ASR · music
             </Text>
           </Group>
-          <Badge color={STATE_COLOR[state ?? "stopped"]} variant={running ? "filled" : "light"} size="lg">
-            server: {state ?? "…"}
-          </Badge>
+          <Group gap="sm">
+            <VramMenu />
+            <Badge color={STATE_COLOR[state ?? "stopped"]} variant={running ? "filled" : "light"} size="lg">
+              server: {state ?? "…"}
+            </Badge>
+          </Group>
         </Group>
       </AppShell.Header>
 
@@ -157,6 +163,9 @@ export function App() {
                 <Tabs.Tab value="call" leftSection={<IconPhone size={16} />}>
                   Call
                 </Tabs.Tab>
+                <Tabs.Tab value="music" leftSection={<IconMusic size={16} />}>
+                  Music
+                </Tabs.Tab>
                 <Tabs.Tab value="voices" leftSection={<IconUsers size={16} />}>
                   Saved Voices
                 </Tabs.Tab>
@@ -179,6 +188,9 @@ export function App() {
               </Tabs.Panel>
               <Tabs.Panel value="call" pt="md">
                 <CallPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+              </Tabs.Panel>
+              <Tabs.Panel value="music" pt="md">
+                <MusicPanel registeredIds={registeredIds} serverRunning={running} />
               </Tabs.Panel>
               <Tabs.Panel value="voices" pt="md">
                 <VoicesPanel />
