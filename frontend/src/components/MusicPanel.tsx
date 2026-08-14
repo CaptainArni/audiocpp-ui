@@ -9,7 +9,6 @@ import {
   Grid,
   Group,
   NumberInput,
-  Paper,
   Progress,
   Select,
   Stack,
@@ -17,7 +16,6 @@ import {
   Text,
   Textarea,
   TextInput,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import {
@@ -38,6 +36,7 @@ import type {
   MusicTake,
 } from "../types";
 import { MusicTakes } from "./MusicTakes";
+import { SectionCard } from "./ui/primitives";
 
 interface Props {
   registeredIds: string[];
@@ -351,9 +350,8 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
       <Grid.Col span={{ base: 12, md: 7 }}>
         <Stack gap="md">
           {/* --- idea + enhance --- */}
-          <Paper withBorder p="md" radius="md">
+          <SectionCard title="Idea" icon={<IconSparkles size={14} />}>
             <Stack gap="sm">
-              <Title order={5}>Idea</Title>
               <Textarea
                 placeholder="a slow, hopeful song about leaving a city at dawn"
                 description="One line is enough — the model below turns it into a caption, lyrics and metadata."
@@ -438,12 +436,11 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
                 </Accordion.Item>
               </Accordion>
             </Stack>
-          </Paper>
+          </SectionCard>
 
           {/* --- the request itself --- */}
-          <Paper withBorder p="md" radius="md">
+          <SectionCard title="Track" icon={<IconMusic size={14} />}>
             <Stack gap="md">
-              <Title order={5}>Track</Title>
               <Stack gap={4}>
                 <Select
                   label="Music model"
@@ -458,21 +455,21 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
                 />
                 {model && (
                   <Group gap="xs">
-                    <Badge variant="light" color="grape">
+                    <Badge size="sm" variant="light" color="violet">
                       {model.family}
                     </Badge>
                     {!model.supportsGuidance && (
-                      <Badge variant="light" color="gray">
+                      <Badge size="sm" variant="light" color="gray">
                         no guidance
                       </Badge>
                     )}
                     {serverRunning &&
                       (registeredIds.includes(model.id) ? (
-                        <Badge variant="dot" color="green">
+                        <Badge size="sm" variant="dot" color="teal">
                           registered
                         </Badge>
                       ) : (
-                        <Badge variant="dot" color="yellow">
+                        <Badge size="sm" variant="dot" color="yellow">
                           not registered
                         </Badge>
                       ))}
@@ -716,6 +713,7 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
                   loading={generating}
                   disabled={!model || !serverRunning}
                   size="md"
+                  className={generating ? "app-working" : undefined}
                 >
                   Generate
                 </Button>
@@ -727,7 +725,12 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
               </Group>
               {progress && (
                 <Stack gap={4}>
-                  <Progress value={(progress.done / progress.total) * 100} size="sm" animated />
+                  <Progress
+                    value={(progress.done / progress.total) * 100}
+                    size="sm"
+                    color="magenta"
+                    animated
+                  />
                   <Text size="xs" c="dimmed">
                     Take {Math.min(progress.done + 1, progress.total)} of {progress.total} — the first
                     request for a model also loads it into VRAM.
@@ -735,7 +738,7 @@ export function MusicPanel({ registeredIds, serverRunning }: Props) {
                 </Stack>
               )}
             </Stack>
-          </Paper>
+          </SectionCard>
         </Stack>
       </Grid.Col>
 

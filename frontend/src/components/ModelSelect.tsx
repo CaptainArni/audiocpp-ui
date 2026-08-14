@@ -73,29 +73,29 @@ export function ModelSelect({
         nothingFoundMessage="No models"
       />
       {selected && (
-        <Group gap="xs">
+        <Group gap={6}>
           {selected.builtinVoices.length > 0 && (
-            <Badge variant="light" color="grape">
+            <Badge size="sm" variant="light" color="violet">
               {selected.builtinVoices.length} built-in voices
             </Badge>
           )}
           {selected.clone && (
-            <Badge variant="light" color="teal">
+            <Badge size="sm" variant="light" color="teal">
               voice cloning
             </Badge>
           )}
           {selected.voiceDesign && (
-            <Badge variant="light" color="orange">
+            <Badge size="sm" variant="light" color="orange">
               voice design
             </Badge>
           )}
           {serverRunning &&
             (registeredIds.includes(selected.id) ? (
-              <Badge variant="dot" color="green">
+              <Badge size="sm" variant="dot" color="teal">
                 registered
               </Badge>
             ) : (
-              <Badge variant="dot" color="yellow">
+              <Badge size="sm" variant="dot" color="yellow">
                 not registered
               </Badge>
             ))}

@@ -1,26 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
-  Alert,
   Badge,
   Button,
   Grid,
   Group,
   Image,
-  Paper,
   ScrollArea,
   Select,
   Stack,
   Text,
   Textarea,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
-import { IconInfoCircle, IconPhoto, IconRefresh, IconScan, IconTrash, IconUpload, IconX } from "@tabler/icons-react";
+import { IconPhoto, IconRefresh, IconScan, IconTrash, IconUpload, IconX } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import type { OcrModelInfo, OcrResult } from "../types";
+import { EmptyState, SectionCard } from "./ui/primitives";
 
 interface Run {
   key: number;
@@ -93,10 +91,8 @@ export function OcrPanel() {
     <Grid gap="md">
       {/* Left: the image + run controls */}
       <Grid.Col span={{ base: 12, md: 5 }}>
-        <Paper withBorder p="md" radius="md">
+        <SectionCard title="OCR test bench" icon={<IconScan size={14} />}>
           <Stack gap="md">
-            <Title order={5}>OCR test bench</Title>
-
             {previewUrl ? (
               <Stack gap="xs">
                 <Image src={previewUrl} alt="page" mah={280} fit="contain" radius="sm" />
@@ -160,40 +156,59 @@ export function OcrPanel() {
               )}
             </Group>
           </Stack>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
 
       {/* Right: results, newest first, for A/B comparison */}
       <Grid.Col span={{ base: 12, md: 7 }}>
-        <Paper withBorder p="md" radius="md">
-          <Group justify="space-between" mb="sm">
-            <Title order={5}>Results ({runs.length})</Title>
-            {runs.length > 0 && (
-              <Button size="xs" variant="subtle" color="gray" leftSection={<IconTrash size={14} />} onClick={() => setRuns([])}>
+        <SectionCard
+          title={`Results · ${runs.length}`}
+          icon={<IconScan size={14} />}
+          actions={
+            runs.length > 0 && (
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="gray"
+                leftSection={<IconTrash size={13} />}
+                onClick={() => setRuns([])}
+              >
                 Clear
               </Button>
-            )}
-          </Group>
+            )
+          }
+        >
           {runs.length === 0 ? (
-            <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
-              Runs appear here with their model, timing and character count — handy for comparing PaddleOCR-VL vs Gemma
-              on the same page.
-            </Alert>
+            <EmptyState
+              icon={<IconScan size={26} />}
+              title="No runs yet"
+              hint="Runs appear here with their model, timing and character count — handy for comparing PaddleOCR-VL against Gemma on the same page."
+            />
           ) : (
             <Stack gap="sm">
               {runs.map((r) => (
-                <Paper key={r.key} withBorder p="sm" radius="sm">
+                <div
+                  key={r.key}
+                  style={{
+                    background: "var(--app-surface-2)",
+                    border: "1px solid var(--app-border)",
+                    borderRadius: "var(--mantine-radius-md)",
+                    padding: 10,
+                  }}
+                >
                   <Group justify="space-between" mb={6} wrap="nowrap">
                     <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                      <Badge variant="light">{r.modelId}</Badge>
-                      <Badge variant="light" color="blue">
+                      <Badge size="sm" variant="light" color="violet">
+                        {r.modelId}
+                      </Badge>
+                      <Badge size="sm" variant="light" color="teal" className="app-mono">
                         {r.result.seconds.toFixed(2)}s
                       </Badge>
-                      <Badge variant="light" color="gray">
+                      <Badge size="sm" variant="light" color="gray" className="app-mono">
                         {r.chars} chars
                       </Badge>
                       {r.result.truncated && (
-                        <Badge variant="light" color="yellow">
+                        <Badge size="sm" variant="light" color="yellow">
                           truncated
                         </Badge>
                       )}
@@ -204,11 +219,11 @@ export function OcrPanel() {
                       {r.result.text || <Text component="span" c="dimmed">(no text returned)</Text>}
                     </Text>
                   </ScrollArea.Autosize>
-                </Paper>
+                </div>
               ))}
             </Stack>
           )}
-        </Paper>
+        </SectionCard>
       </Grid.Col>
     </Grid>
   );

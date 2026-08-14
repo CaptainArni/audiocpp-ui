@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ActionIcon, Box, Group, Text, Tooltip } from "@mantine/core";
 import {
   IconArrowBarToDown,
@@ -11,23 +11,16 @@ import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import "../lib/monaco"; // side-effect: point Monaco's loader at the CDN
 import { LOG_LANGUAGE_ID, LOG_THEME, registerLogLanguage } from "../lib/logLanguage";
+import { logStore, type LogLevel, type LogLine, type LogSource } from "../lib/logStore";
 import "./LogPanel.css";
 
-type LogSource = "app" | "server";
-type LogLevel = "debug" | "info" | "success" | "warn" | "error" | "stdout" | "stderr";
-
-interface LogLine {
-  t: number;
-  source: LogSource;
-  level: LogLevel;
-  line: string;
-}
-
-const MAX_LINES = 1000;
 const SOURCE_TAG: Record<LogSource, string> = { app: "app", server: "srv" };
 // Levels that get a coloured left bar / a tinted background in the gutter.
 const BAR_LEVELS = new Set<LogLevel>(["info", "stderr", "warn", "error", "success"]);
 const BG_LEVELS = new Set<LogLevel>(["error", "warn"]);
+
+/** Editor height. The dock's footer height in App.tsx is derived from this. */
+export const LOG_EDITOR_HEIGHT = 300;
 
 function timeStr(t: number): string {
   const d = new Date(t);
@@ -40,7 +33,9 @@ function formatLine(l: LogLine): string {
 }
 
 export function LogPanel() {
-  const [lines, setLines] = useState<LogLine[]>([]);
+  // The lines live in a module-scope store, so this component is free to unmount
+  // with the dock (which Monaco requires) without dropping the stream.
+  const snap = useSyncExternalStore(logStore.subscribe, logStore.getSnapshot);
   const [autoScroll, setAutoScroll] = useState(true);
   const [wrap, setWrap] = useState(true);
   const [showDebug, setShowDebug] = useState(true);
@@ -49,37 +44,8 @@ export function LogPanel() {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const decoRef = useRef<string[]>([]);
-  const pendingRef = useRef<LogLine[]>([]);
-  const frameRef = useRef<number | null>(null);
 
-  // Stream logs over SSE (backend replays a backlog on connect). Incoming lines
-  // are coalesced per animation frame so bursts become a single editor update.
-  useEffect(() => {
-    const flush = () => {
-      frameRef.current = null;
-      const batch = pendingRef.current;
-      if (batch.length === 0) return;
-      pendingRef.current = [];
-      setLines((prev) => {
-        const next = prev.concat(batch);
-        return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
-      });
-    };
-    const es = new EventSource("/api/server/logs");
-    es.onmessage = (ev) => {
-      try {
-        pendingRef.current.push(JSON.parse(ev.data) as LogLine);
-        if (frameRef.current === null) frameRef.current = requestAnimationFrame(flush);
-      } catch {
-        /* ignore keep-alive comments */
-      }
-    };
-    return () => {
-      es.close();
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-    };
-  }, []);
-
+  const lines = snap.lines;
   const visible = useMemo(
     () => (showDebug ? lines : lines.filter((l) => l.level !== "debug")),
     [lines, showDebug],
@@ -95,7 +61,7 @@ export function LogPanel() {
       scrollBeyondLastLine: false,
       automaticLayout: true,
       fontSize: 12,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+      fontFamily: "'JetBrains Mono Variable', 'Cascadia Code', Consolas, monospace",
       renderLineHighlight: "none",
       folding: false,
       glyphMargin: false,
@@ -161,42 +127,70 @@ export function LogPanel() {
     void navigator.clipboard?.writeText(visible.map(formatLine).join("\n"));
   }, [visible]);
 
-  const clear = useCallback(() => setLines([]), []);
-
   return (
     <Box>
       <Group justify="space-between" mb={6}>
+        {/* The line count lives on the dock bar above; repeating it here just
+            prints the same number twice. What is worth saying is when the view
+            is filtered, because then the count up there no longer matches. */}
         <Text size="xs" c="dimmed">
-          {visible.length} line{visible.length === 1 ? "" : "s"}
-          {!showDebug && lines.length !== visible.length ? " (debug hidden)" : ""}
+          {!showDebug && lines.length !== visible.length
+            ? `${lines.length - visible.length} debug line${
+                lines.length - visible.length === 1 ? "" : "s"
+              } hidden`
+            : ""}
         </Text>
         <Group gap={4}>
           <Tooltip label={showDebug ? "Hide debug lines" : "Show debug lines"}>
-            <ActionIcon variant={showDebug ? "light" : "subtle"} onClick={() => setShowDebug((v) => !v)}>
-              <IconBug size={16} />
+            <ActionIcon
+              size="sm"
+              variant={showDebug ? "light" : "subtle"}
+              color="gray"
+              onClick={() => setShowDebug((v) => !v)}
+            >
+              <IconBug size={15} />
             </ActionIcon>
           </Tooltip>
           <Tooltip label={wrap ? "Disable word wrap" : "Enable word wrap"}>
-            <ActionIcon variant={wrap ? "light" : "subtle"} onClick={() => setWrap((v) => !v)}>
-              <IconTextWrap size={16} />
+            <ActionIcon
+              size="sm"
+              variant={wrap ? "light" : "subtle"}
+              color="gray"
+              onClick={() => setWrap((v) => !v)}
+            >
+              <IconTextWrap size={15} />
             </ActionIcon>
           </Tooltip>
           <Tooltip label={autoScroll ? "Auto-scroll on" : "Auto-scroll off"}>
             <ActionIcon
+              size="sm"
               variant={autoScroll ? "light" : "subtle"}
+              color="gray"
               onClick={() => setAutoScroll((v) => !v)}
             >
-              <IconArrowBarToDown size={16} />
+              <IconArrowBarToDown size={15} />
             </ActionIcon>
           </Tooltip>
           <Tooltip label="Copy logs">
-            <ActionIcon variant="subtle" onClick={copyAll} disabled={visible.length === 0}>
-              <IconCopy size={16} />
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={copyAll}
+              disabled={visible.length === 0}
+            >
+              <IconCopy size={15} />
             </ActionIcon>
           </Tooltip>
           <Tooltip label="Clear view">
-            <ActionIcon variant="subtle" onClick={clear} disabled={lines.length === 0}>
-              <IconTrash size={16} />
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={() => logStore.clear()}
+              disabled={lines.length === 0}
+            >
+              <IconTrash size={15} />
             </ActionIcon>
           </Tooltip>
         </Group>
@@ -205,10 +199,11 @@ export function LogPanel() {
       <Box
         pos="relative"
         style={{
-          height: 300,
-          borderRadius: 6,
+          height: LOG_EDITOR_HEIGHT,
+          borderRadius: "var(--mantine-radius-md)",
           overflow: "hidden",
-          border: "1px solid var(--mantine-color-dark-4)",
+          border: "1px solid var(--app-border)",
+          background: "var(--app-surface-1)",
         }}
       >
         <Editor

@@ -1,0 +1,191 @@
+/* Global element-level styling for the Studio console theme.
+   Loaded *after* Mantine's own stylesheets so the handful of rules that
+   deliberately override a Mantine global win on source order alone. */
+
+/* The app background sits one step below `--mantine-color-body` (which every
+   Paper, dropdown and modal paints itself with). Without this the cards and the
+   page behind them are the same colour and nothing reads as a card. */
+body {
+  background: var(--app-surface-0);
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers, ids, paths and durations are set in the mono face wherever they are
+   compared or watched change — a proportional face makes a ticking counter
+   jitter and stops columns of sizes from lining up. */
+.app-mono {
+  font-family: var(--mantine-font-family-monospace);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
+}
+
+/* The small-caps section header used across every panel, in place of a <Title>.
+   A dense console needs its headings quiet and unmistakable, not large. */
+.app-eyebrow {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+}
+
+/* One focus ring for the whole app, in the chrome accent, visible against
+   `--app-surface-1` (Mantine's default is nearly invisible on it). */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--app-accent-soft);
+  color: var(--mantine-color-white);
+}
+
+/* Slim scrollbars. The stock Windows/Chromium ones are wide, light and land in
+   the middle of every scrolling card in the app. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-surface-3) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--app-surface-3);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--mantine-color-dark-3);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Hairlines everywhere. Mantine's default border is one flat colour; a
+   translucent white reads as an edge on every surface tier instead of only on
+   the one it was picked for. */
+.mantine-Paper-root[data-with-border],
+.mantine-Card-root[data-with-border] {
+  border-color: var(--app-border);
+}
+
+/* Inputs sit one tier above the card they are on, which is what separates them
+   without giving every field a box. */
+.mantine-Input-input {
+  background-color: var(--app-surface-2);
+  border-color: var(--app-border);
+  transition:
+    border-color var(--app-fast) var(--app-ease),
+    background-color var(--app-fast) var(--app-ease);
+}
+.mantine-Input-input:hover:not(:disabled):not([data-disabled]) {
+  border-color: var(--app-border-strong);
+}
+.mantine-Input-input:focus,
+.mantine-Input-input:focus-within {
+  border-color: var(--app-accent);
+  outline: none;
+}
+
+/* Buttons and icon buttons get the same short, eased press as everything else
+   rather than Mantine's instant swap. */
+.mantine-Button-root,
+.mantine-ActionIcon-root {
+  transition:
+    background-color var(--app-fast) var(--app-ease),
+    border-color var(--app-fast) var(--app-ease),
+    transform var(--app-fast) var(--app-ease);
+}
+.mantine-Button-root:active:not(:disabled):not([data-disabled]),
+.mantine-ActionIcon-root:active:not(:disabled):not([data-disabled]) {
+  transform: translateY(1px);
+}
+
+/* Accordions and segmented controls carry Mantine's mid-grey by default, which
+   on this palette reads as a lighter card floating on a darker one. */
+.mantine-Accordion-item {
+  background-color: var(--app-surface-2);
+  border-color: var(--app-border);
+}
+.mantine-SegmentedControl-root {
+  background-color: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+}
+
+/* Mantine's light alert paints a full-strength tint of its colour, which on this
+   near-black ground reads as a filled warning bar shouting across the card. Here
+   an alert is a quiet surface with a coloured spine — the hue still classifies
+   it, without competing with the content it is annotating. */
+.mantine-Alert-root {
+  background: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+  border-left: 3px solid var(--alert-color, var(--app-accent));
+}
+
+.mantine-Alert-title {
+  color: var(--alert-color, var(--mantine-color-dark-0));
+}
+
+.mantine-Menu-dropdown,
+.mantine-Popover-dropdown {
+  border-color: var(--app-border);
+  box-shadow: var(--app-shadow-pop);
+}
+
+/* A button that is rendering audio. The sweep is in the audio accent, so it
+   belongs to the same family as the playhead and the waveform: magenta means
+   "audio is happening" wherever it appears. Mantine's bare spinner says only
+   "wait", which is the one thing you already knew. */
+.app-working {
+  position: relative;
+  overflow: hidden;
+}
+
+.app-working::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--app-audio) 45%, transparent) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: app-sweep 1.5s var(--app-ease) infinite;
+  pointer-events: none;
+}
+
+@keyframes app-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Every animation in the app is expressed in terms of --app-fast / --app-slow,
+   so switching them off here switches off all of it. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --app-fast: 0.01ms;
+    --app-slow: 0.01ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -7,12 +7,10 @@ import {
   CopyButton,
   Grid,
   Group,
-  Paper,
   Progress,
   SegmentedControl,
   Stack,
   Text,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
@@ -35,6 +33,8 @@ import { MicRecorder } from "./MicRecorder";
 import { ModelSelect } from "./ModelSelect";
 import { TextPlayer } from "./TextPlayer";
 import { VoicePicker, type VoiceValue } from "./VoicePicker";
+import { AudioPlayer, type AudioPlayerHandle } from "./ui/AudioPlayer";
+import { EmptyState, SectionCard } from "./ui/primitives";
 
 /** m:ss for short clips, h:mm:ss once a recording runs past an hour. */
 function formatDuration(sec: number): string {
@@ -53,14 +53,12 @@ interface Props {
 
 /** Transcript with word-level playback highlighting (karaoke style). */
 function KaraokeTranscript({ words, audioUrl }: { words: TranscriptWord[]; audioUrl: string }) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const rafRef = useRef(0);
+  const playerRef = useRef<AudioPlayerHandle>(null);
   const [active, setActive] = useState(-1);
 
-  const update = () => {
-    const a = audioRef.current;
-    if (!a) return;
-    const t = a.currentTime;
+  // The player drives its own animation frame for the playhead, so the
+  // highlighting rides along on that rather than running a second loop.
+  const onProgress = (t: number) => {
     let idx = -1;
     for (let i = 0; i < words.length; i++) {
       if (words[i].start > t) break;
@@ -69,51 +67,33 @@ function KaraokeTranscript({ words, audioUrl }: { words: TranscriptWord[]; audio
         break;
       }
     }
-    setActive(idx);
-  };
-
-  const loop = () => {
-    update();
-    const a = audioRef.current;
-    if (a && !a.paused && !a.ended) rafRef.current = requestAnimationFrame(loop);
-  };
-
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
-
-  const seekTo = (w: TranscriptWord) => {
-    const a = audioRef.current;
-    if (!a) return;
-    a.currentTime = w.start + 0.001;
-    void a.play();
+    // Only on a change: this fires every frame, and the word is the same for
+    // most of them.
+    setActive((prev) => (prev === idx ? prev : idx));
   };
 
   return (
     <Stack gap="sm">
-      <audio
-        ref={audioRef}
-        controls
+      <AudioPlayer
+        ref={playerRef}
         src={audioUrl}
-        style={{ width: "100%", height: 36 }}
-        onPlay={() => {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = requestAnimationFrame(loop);
-        }}
-        onPause={() => cancelAnimationFrame(rafRef.current)}
-        onSeeked={update}
+        variant="full"
+        onProgress={onProgress}
         onEnded={() => setActive(-1)}
       />
       <Text component="div" style={{ lineHeight: 2 }}>
         {words.map((w, i) => (
           <span key={i}>
             <span
-              onClick={() => seekTo(w)}
+              onClick={() => playerRef.current?.seek(w.start + 0.001)}
               title={`${w.start.toFixed(2)}s – ${w.end.toFixed(2)}s`}
               style={{
                 cursor: "pointer",
                 padding: "2px 3px",
                 borderRadius: 4,
-                transition: "background-color 120ms ease",
-                backgroundColor: i === active ? "var(--mantine-color-grape-filled)" : undefined,
+                transition: "background-color var(--app-fast) var(--app-ease)",
+                // The audio accent: this *is* the playhead, spelled out in words.
+                backgroundColor: i === active ? "var(--app-audio)" : undefined,
                 color: i === active ? "var(--mantine-color-white)" : undefined,
               }}
             >
@@ -162,7 +142,7 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
 
   if (asrModels.length === 0) {
     return (
-      <Alert icon={<IconInfoCircle size={18} />} color="blue" variant="light" title="No ASR model downloaded">
+      <Alert icon={<IconInfoCircle size={18} />} color="violet" variant="light" title="No ASR model downloaded">
         Download a speech-recognition model first, then rescan. For example:
         <Code block mt="sm">
           cd E:\LLM\audio\audio.cpp{"\n"}
@@ -252,9 +232,8 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
   return (
     <Grid gap="md">
       <Grid.Col span={{ base: 12, md: 7 }}>
-        <Paper withBorder p="md" radius="md">
+        <SectionCard title="Transcribe" icon={<IconWriting size={14} />}>
           <Stack gap="md">
-            <Title order={5}>Transcribe (ASR)</Title>
             <ModelSelect
               models={models}
               task="asr"
@@ -365,14 +344,23 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
               Transcribe
             </Button>
           </Stack>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
       <Grid.Col span={{ base: 12, md: 5 }}>
-        {result != null && (
-          <Paper withBorder p="md" radius="md">
-            <Group justify="space-between" mb="xs">
-              <Title order={6}>Transcript</Title>
-              <Group gap="xs">
+        {result == null ? (
+          <SectionCard title="Transcript" icon={<IconWriting size={14} />}>
+            <EmptyState
+              icon={<IconFileMusic size={26} />}
+              title="No transcript yet"
+              hint="Drop an audio or video file — or record from the microphone — then press Transcribe."
+            />
+          </SectionCard>
+        ) : (
+          <SectionCard
+            title="Transcript"
+            icon={<IconWriting size={14} />}
+            actions={
+              <Group gap={2}>
                 <CopyButton value={result.text}>
                   {({ copied, copy }) => (
                     <Tooltip label={copied ? "Copied" : "Copy transcript"}>
@@ -399,7 +387,8 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
                   </ActionIcon>
                 </Tooltip>
               </Group>
-            </Group>
+            }
+          >
             {result.words.length > 0 && upload ? (
               <KaraokeTranscript words={result.words} audioUrl={api.uploadAudioUrl(upload.uploadId)} />
             ) : (
@@ -410,10 +399,10 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
                 a reading would be made of, so this is the same job as the
                 Library player — hence the shared TextPlayer. */}
             {result.text.trim() !== "" && (
-              <Stack gap="sm" mt="md">
-                <Group gap="xs">
-                  <IconVolume size={16} />
-                  <Title order={6}>Read it aloud</Title>
+              <Stack gap="sm" mt="lg" pt="md" style={{ borderTop: "1px solid var(--app-border)" }}>
+                <Group gap={6}>
+                  <IconVolume size={14} color="var(--app-accent)" />
+                  <span className="app-eyebrow">Read it aloud</span>
                 </Group>
                 <ModelSelect
                   models={models}
@@ -435,7 +424,7 @@ export function AsrPanel({ models, registeredIds, serverRunning }: Props) {
                 />
               </Stack>
             )}
-          </Paper>
+          </SectionCard>
         )}
       </Grid.Col>
     </Grid>

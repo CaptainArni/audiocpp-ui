@@ -51,19 +51,31 @@ export function registerLogLanguage(m: typeof Monaco): void {
     },
   } as Monaco.languages.IMonarchLanguage);
 
+  // Painted from the same surface ramp as the rest of the app (theme.ts's
+  // `dark` array). The editor used to carry its own near-black and read as a
+  // foreign window pasted into the page; matching --app-surface-1 makes the
+  // dock look like part of the dock. Level colours are deliberately left as
+  // they are — in a log, red and amber carry meaning, not styling.
   m.editor.defineTheme(LOG_THEME, {
     base: "vs-dark",
     inherit: true,
     colors: {
-      "editor.background": "#0d0e11",
-      "editorGutter.background": "#0d0e11",
-      "editorLineNumber.foreground": "#30363d",
+      "editor.background": "#121116",
+      "editorGutter.background": "#121116",
+      "editorLineNumber.foreground": "#2a2833",
+      "editor.selectionBackground": "#a651de40",
+      "editor.lineHighlightBorder": "#00000000",
+      "scrollbarSlider.background": "#22212b99",
+      "scrollbarSlider.hoverBackground": "#2a2833cc",
+      "scrollbarSlider.activeBackground": "#35333f",
     },
     rules: [
-      { token: "logTime", foreground: "6e7681" },
-      { token: "logSource", foreground: "8b949e", fontStyle: "italic" },
-      { token: "logArrow", foreground: "d2a8ff" },
-      { token: "logMethod", foreground: "d2a8ff", fontStyle: "bold" },
+      { token: "logTime", foreground: "6a6675" },
+      { token: "logSource", foreground: "94909f", fontStyle: "italic" },
+      // The brand violet, for the request arrows and verbs — the chrome accent
+      // doing chrome work inside the log too.
+      { token: "logArrow", foreground: "c295f0" },
+      { token: "logMethod", foreground: "c295f0", fontStyle: "bold" },
       { token: "logPath", foreground: "79c0ff" },
       { token: "logString", foreground: "a5d6ff" },
       { token: "logNum", foreground: "f2cc60" },
@@ -73,7 +85,7 @@ export function registerLogLanguage(m: typeof Monaco): void {
       { token: "logWarnKw", foreground: "e3b341" },
       { token: "logOkKw", foreground: "7ee787" },
       { token: "logKey", foreground: "ffa657" },
-      { token: "logSep", foreground: "484f58" },
+      { token: "logSep", foreground: "3a3745" },
     ],
   });
 }

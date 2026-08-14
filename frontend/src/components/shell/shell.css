@@ -1,0 +1,247 @@
+/* The app shell: top bar, nav rail, content column, log dock. */
+
+/* ---- top bar ----------------------------------------------------------- */
+
+.app-topbar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px 0 14px;
+  background: var(--app-surface-0);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.app-brand img {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+
+.app-brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+/* ---- nav rail ---------------------------------------------------------- */
+
+.app-nav {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface-0);
+  border-right: 1px solid var(--app-border);
+  padding: 10px 8px;
+  overflow-y: auto;
+}
+
+/* The rail *is* Mantine's Tabs.List, only moved and restyled — which is the
+   whole reason the tabs still mount the way they always did. See
+   docs/plan-ui-redesign.md; a hand-rolled rail would unmount CallPanel on every
+   navigation and hang up the call. */
+.app-nav .mantine-Tabs-list {
+  gap: 1px;
+  border: none;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+}
+
+.app-nav .mantine-Tabs-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--mantine-radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--mantine-color-dark-2);
+  background: transparent;
+  transition:
+    background-color var(--app-fast) var(--app-ease),
+    color var(--app-fast) var(--app-ease);
+}
+
+.app-nav .mantine-Tabs-tab:hover {
+  background: var(--app-surface-2);
+  color: var(--mantine-color-dark-0);
+}
+
+.app-nav .mantine-Tabs-tab[data-active] {
+  background: var(--app-accent-soft);
+  color: var(--mantine-color-white);
+}
+
+.app-nav .mantine-Tabs-tab[data-active] .app-nav-icon {
+  color: var(--app-accent);
+}
+
+.app-nav .mantine-Tabs-tabSection {
+  margin: 0;
+}
+
+.app-nav-icon {
+  display: flex;
+  color: var(--mantine-color-dark-2);
+  flex: none;
+}
+
+.app-nav-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-nav-group {
+  padding: 14px 10px 5px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--app-surface-3);
+}
+
+.app-nav-group:first-child {
+  padding-top: 2px;
+}
+
+/* Collapsed: icons only, centred, with the label carried by a tooltip. */
+.app-nav[data-collapsed] .mantine-Tabs-tab {
+  justify-content: center;
+  padding: 9px 0;
+}
+
+.app-nav[data-collapsed] .app-nav-group {
+  height: 1px;
+  margin: 9px 8px;
+  padding: 0;
+  background: var(--app-border);
+  overflow: hidden;
+  text-indent: -999px;
+}
+
+.app-nav-foot {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+/* ---- content ----------------------------------------------------------- */
+
+/* Tabs wraps the whole AppShell (so the rail can be the Tabs.List while the
+   panels stay in main). With orientation="vertical" its root is a flex row,
+   which would size the AppShell to its content and pinch the entire app into a
+   column a few hundred pixels wide. AppShell does all the layout here, so the
+   Tabs root is reduced to a plain full-size box. */
+.app-tabs {
+  display: block;
+  width: 100%;
+  min-height: 100vh;
+}
+
+.app-tabs > .mantine-Tabs-panel {
+  flex: none;
+}
+
+/* Fluid, but not unboundedly so: past ~1600px a two-column panel stops being
+   readable and becomes two things shouting from opposite edges of a monitor. */
+.app-content {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- log dock ---------------------------------------------------------- */
+
+/* AppShell's footer spans the full window, which chops the rail off at the dock
+   and makes the sidebar look truncated. Offsetting it by the navbar width lets
+   the rail run unbroken from the header to the bottom of the window; the var is
+   Mantine's own, so it follows the rail when it collapses to icons. */
+.mantine-AppShell-footer {
+  left: var(--app-shell-navbar-width, 0);
+}
+
+.app-dock {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface-0);
+  border-top: 1px solid var(--app-border);
+  overflow: hidden;
+}
+
+.app-dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 37px;
+  flex: none;
+  padding: 0 10px 0 6px;
+  min-width: 0;
+}
+
+/* The collapsed bar is a readout, not just a handle: the newest line stays
+   visible so the dock can stay shut without going blind. */
+.app-dock-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: 29px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--mantine-radius-md);
+  background: transparent;
+  color: var(--mantine-color-dimmed);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--app-fast) var(--app-ease);
+}
+
+.app-dock-toggle:hover {
+  background: var(--app-surface-2);
+}
+
+.app-dock-tail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.app-dock-tail[data-level="error"] {
+  color: var(--mantine-color-red-4);
+}
+.app-dock-tail[data-level="warn"],
+.app-dock-tail[data-level="stderr"] {
+  color: var(--mantine-color-orange-4);
+}
+.app-dock-tail[data-level="success"] {
+  color: var(--mantine-color-teal-4);
+}
+
+.app-dock-body {
+  flex: 1;
+  min-height: 0;
+  padding: 0 10px 10px;
+}

@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   ActionIcon,
-  Alert,
   Badge,
   Button,
   Card,
   Grid,
   Group,
-  Paper,
   ScrollArea,
   SegmentedControl,
   Select,
@@ -15,16 +13,25 @@ import {
   Text,
   TextInput,
   Textarea,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
-import { IconDeviceFloppy, IconFileMusic, IconInfoCircle, IconTrash, IconUpload, IconX } from "@tabler/icons-react";
+import {
+  IconDeviceFloppy,
+  IconFileMusic,
+  IconMicrophone,
+  IconTrash,
+  IconUpload,
+  IconUsers,
+  IconX,
+} from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import { fileToWavUpload } from "../lib/wav";
 import { sampleTexts } from "../lib/sampleTexts";
 import { MicRecorder } from "./MicRecorder";
+import { AudioPlayer } from "./ui/AudioPlayer";
+import { EmptyState, SectionCard } from "./ui/primitives";
 import type { SavedVoice } from "../types";
 
 export function VoicesPanel() {
@@ -93,9 +100,8 @@ export function VoicesPanel() {
   return (
     <Grid gap="md">
       <Grid.Col span={{ base: 12, md: 5 }}>
-        <Paper withBorder p="md" radius="md">
+        <SectionCard title="New voice" icon={<IconMicrophone size={14} />}>
           <Stack gap="md">
-            <Title order={5}>New voice</Title>
             <SegmentedControl
               size="xs"
               data={[
@@ -169,18 +175,18 @@ export function VoicesPanel() {
               </Button>
             </div>
           </Stack>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
 
       <Grid.Col span={{ base: 12, md: 7 }}>
-        <Paper withBorder p="md" radius="md">
+        <SectionCard title={`Saved voices · ${voices.length}`} icon={<IconUsers size={14} />}>
           <Stack gap="sm">
-            <Title order={5}>Saved voices ({voices.length})</Title>
             {voices.length === 0 ? (
-              <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
-                No saved voices yet — create one on the left. This is the only place voices are created, previewed and
-                deleted; every other tab just picks from this list.
-              </Alert>
+              <EmptyState
+                icon={<IconUsers size={26} />}
+                title="No saved voices yet"
+                hint="Create one on the left. This is the only place voices are created, previewed and deleted — every other tab just picks from this list."
+              />
             ) : (
               <ScrollArea.Autosize mah={640} offsetScrollbars type="auto">
                 <Stack gap="sm">
@@ -208,7 +214,11 @@ export function VoicesPanel() {
                           </Tooltip>
                         </Group>
                       </Group>
-                      <audio controls preload="none" src={api.voiceAudioUrl(v.id)} style={{ width: "100%", height: 32 }} />
+                      <AudioPlayer
+                        src={api.voiceAudioUrl(v.id)}
+                        sizeBytes={v.sizeKB * 1024}
+                        durationSec={v.durationSec}
+                      />
                       {v.referenceText && (
                         <Text size="xs" c="dimmed" mt={4} lineClamp={2}>
                           {v.referenceText}
@@ -220,7 +230,7 @@ export function VoicesPanel() {
               </ScrollArea.Autosize>
             )}
           </Stack>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
     </Grid>
   );

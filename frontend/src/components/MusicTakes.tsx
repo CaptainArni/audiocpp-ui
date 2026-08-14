@@ -4,13 +4,11 @@ import {
   Anchor,
   Badge,
   Box,
-  Card,
   Collapse,
   Divider,
   Group,
   Stack,
   Text,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import {
@@ -19,12 +17,15 @@ import {
   IconChevronUp,
   IconCopy,
   IconDownload,
+  IconMusic,
   IconRepeat,
   IconTrash,
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import type { MusicTake } from "../types";
+import { AudioPlayer } from "./ui/AudioPlayer";
+import { EmptyState, SectionCard } from "./ui/primitives";
 
 interface Props {
   /** Takes from the run in progress, shown before the list has been refetched. */
@@ -131,31 +132,34 @@ export function MusicTakes({ highlight, refreshKey, onReuse }: Props) {
 
   if (rows.length === 0) {
     return (
-      <Card withBorder radius="md" padding="md">
-        <Title order={6}>Takes</Title>
-        <Text size="sm" c="dimmed" mt="xs">
-          Nothing rendered yet. Every take is saved with the parameters that made it, so a good one
-          can be rendered again later.
-        </Text>
-      </Card>
+      <SectionCard title="Takes" icon={<IconMusic size={14} />}>
+        <EmptyState
+          icon={<IconMusic size={26} />}
+          title="Nothing rendered yet"
+          hint="Every take is saved with the parameters that made it, so a good one can be rendered again later."
+        />
+      </SectionCard>
     );
   }
 
   return (
-    <Card withBorder radius="md" padding="sm">
-      <Group justify="space-between" mb="xs">
-        <Title order={6}>Takes</Title>
-        <Text size="xs" c="dimmed">
+    <SectionCard
+      title="Takes"
+      icon={<IconMusic size={14} />}
+      actions={
+        <Text size="xs" c="dimmed" className="app-mono">
           {rows.length} · {totalMB} MB
         </Text>
-      </Group>
+      }
+      flush
+    >
       {/* A plain block scroller, not ScrollArea.Autosize: that component's
           content element sizes to its children (measured 579px inside a 440px
           viewport), so a nowrap title never reaches an ellipsis — it just grows
           the row until the buttons on the right are off-card and the list
           scrolls sideways. A block box takes its width from the card, which is
           what makes the truncation work. */}
-      <Box mah={760} style={{ overflowY: "auto", overflowX: "hidden" }}>
+      <Box p={8} mah={760} style={{ overflowY: "auto", overflowX: "hidden" }}>
         <Stack gap="xs">
           {rows.map((take, i) => {
             const rt = realtime(take);
@@ -255,27 +259,32 @@ export function MusicTakes({ highlight, refreshKey, onReuse }: Props) {
                   </Group>
                 </Group>
 
-                <Group gap={4} wrap="nowrap" mt={4}>
-                  <audio
-                    controls
-                    preload="none"
+                <Box mt={4}>
+                  {/* sizeBytes lets the player decline to decode a waveform for
+                      a full-length take (a 3-minute stereo render is ~33 MB) and
+                      fall back to the plain seek bar — see lib/peaks.ts. */}
+                  <AudioPlayer
                     src={api.musicTakeAudioUrl(take.id)}
-                    style={{ flex: 1, minWidth: 0, height: 32 }}
+                    sizeBytes={take.sizeBytes}
+                    durationSec={take.durationSec}
+                    actions={
+                      /* The title is the caption truncated, so the full prompt
+                         is the one thing the row cannot show and the one thing
+                         you need to judge a take against what you asked for. */
+                      <Tooltip label={expanded ? "Hide prompt" : "Show prompt"} withArrow>
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          size="sm"
+                          onClick={() => setOpen((o) => ({ ...o, [take.id]: !expanded }))}
+                          aria-label={expanded ? "Hide prompt" : "Show prompt"}
+                        >
+                          {expanded ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
+                        </ActionIcon>
+                      </Tooltip>
+                    }
                   />
-                  {/* The title is the caption truncated, so the full prompt is
-                      the one thing the row cannot show and the one thing you
-                      need to judge a take against what you asked for. */}
-                  <Tooltip label={expanded ? "Hide prompt" : "Show prompt"} withArrow>
-                    <ActionIcon
-                      variant="subtle"
-                      size="sm"
-                      onClick={() => setOpen((o) => ({ ...o, [take.id]: !expanded }))}
-                      aria-label={expanded ? "Hide prompt" : "Show prompt"}
-                    >
-                      {expanded ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
+                </Box>
 
                 <Collapse expanded={expanded}>
                   <Stack gap={4} mt={6} pl={4}>
@@ -302,6 +311,6 @@ export function MusicTakes({ highlight, refreshKey, onReuse }: Props) {
           })}
         </Stack>
       </Box>
-    </Card>
+    </SectionCard>
   );
 }

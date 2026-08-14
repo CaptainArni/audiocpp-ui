@@ -1,0 +1,127 @@
+/* The call orb: state indicator and primary control in one.
+   Colour and motion say what is happening; the label under it says it in words,
+   because colour alone does not distinguish "listening" from "thinking". */
+
+.call-orb-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 190px;
+  height: 190px;
+  flex: none;
+}
+
+/* Two concentric rings behind the button. The outer one is driven by the live
+   microphone level, so it is obvious the mic is actually open *before* anyone
+   says anything they'd rather not repeat. */
+.call-ring {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  border: 1px solid var(--orb-color);
+  opacity: 0.35;
+  transition:
+    width 90ms linear,
+    height 90ms linear,
+    opacity var(--app-slow) var(--app-ease);
+}
+
+.call-ring[data-role="level"] {
+  background: color-mix(in srgb, var(--orb-color) 10%, transparent);
+  border-color: color-mix(in srgb, var(--orb-color) 45%, transparent);
+}
+
+/* A slow breath while the model is working — a different motion from the
+   level ring, so "thinking" never looks like "hearing you". */
+.call-ring[data-role="busy"] {
+  width: 170px;
+  height: 170px;
+  animation: call-breathe 2.2s var(--app-ease) infinite;
+}
+
+@keyframes call-breathe {
+  0%,
+  100% {
+    transform: scale(0.86);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 0.12;
+  }
+}
+
+.call-orb {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--orb-color);
+  background: radial-gradient(
+    circle at 50% 38%,
+    color-mix(in srgb, var(--orb-color) 26%, transparent),
+    color-mix(in srgb, var(--orb-color) 11%, transparent) 70%
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--orb-color) 35%, transparent),
+    0 8px 30px -10px color-mix(in srgb, var(--orb-color) 60%, transparent);
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition:
+    background var(--app-slow) var(--app-ease),
+    box-shadow var(--app-slow) var(--app-ease),
+    transform var(--app-fast) var(--app-ease);
+}
+
+.call-orb:hover:not(:disabled) {
+  transform: scale(1.02);
+}
+
+.call-orb:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.call-orb:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.call-orb[data-inert] {
+  cursor: default;
+}
+
+/* ---- transcript -------------------------------------------------------- */
+
+.call-bubble {
+  max-width: 86%;
+  padding: 8px 11px;
+  border-radius: var(--mantine-radius-lg);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.call-bubble[data-role="user"] {
+  background: var(--app-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--app-accent) 28%, transparent);
+  border-bottom-right-radius: 4px;
+}
+
+.call-bubble[data-role="assistant"] {
+  background: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+  border-bottom-left-radius: 4px;
+}
+
+/* The sentence currently coming out of the speaker, in the audio accent —
+   the same magenta as a playhead, because that is exactly what it is. */
+.call-speaking {
+  color: var(--app-audio);
+  font-weight: 600;
+}

@@ -9,7 +9,6 @@ import {
   Grid,
   Group,
   Loader,
-  Paper,
   ScrollArea,
   SegmentedControl,
   Select,
@@ -18,7 +17,6 @@ import {
   Switch,
   Text,
   Textarea,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import {
@@ -29,12 +27,14 @@ import {
   IconDeviceFloppy,
   IconHistory,
   IconInfoCircle,
+  IconMessage,
   IconMicrophone,
   IconPhone,
   IconPhoneOff,
   IconPlayerStopFilled,
   IconRefresh,
   IconSend,
+  IconSettings,
   IconTrash,
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
@@ -45,6 +45,8 @@ import { DEFAULT_SPEECH_FACTOR } from "../lib/vad";
 import type { CallConfig, ConversationSummary, DiscoveredModel } from "../types";
 import { ModelSelect } from "./ModelSelect";
 import { VoicePicker, type VoiceValue } from "./VoicePicker";
+import { SectionCard } from "./ui/primitives";
+import "./CallPanel.css";
 
 interface Props {
   models: DiscoveredModel[];
@@ -76,15 +78,24 @@ const ORB_LABEL: Partial<Record<CallPhase, string>> = {
   hearing: "Listening to you",
 };
 
+/**
+ * Mantine colour keys per phase, resolved as CSS variables by the orb.
+ *
+ * `speaking` is the one deliberate choice here: it takes the **audio** accent
+ * (magenta), the same colour as every playhead and waveform in the app, so that
+ * "sound is coming out right now" looks the same wherever it happens. The
+ * waiting phases stay in the chrome family and differ from each other by motion
+ * as much as by hue.
+ */
 const PHASE_COLOR: Record<CallPhase, string> = {
   idle: "gray",
   warming: "yellow",
-  listening: "blue",
+  listening: "violet",
   hearing: "cyan",
-  transcribing: "grape",
+  transcribing: "indigo",
   thinking: "violet",
   preparing: "indigo",
-  speaking: "teal",
+  speaking: "magenta",
   error: "red",
 };
 
@@ -359,14 +370,21 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
     <Grid gap="md">
       {/* Left: setup */}
       <Grid.Col span={{ base: 12, md: 5 }}>
-        <Paper withBorder p="md" radius="md">
-          <Group justify="space-between" mb={setupOpen ? "sm" : 0}>
-            <Title order={5}>Setup</Title>
-            <ActionIcon variant="subtle" onClick={() => setSetupOpen((o) => !o)}>
-              {setupOpen ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
+        <SectionCard
+          title="Setup"
+          icon={<IconSettings size={14} />}
+          actions={
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              size="sm"
+              onClick={() => setSetupOpen((o) => !o)}
+              aria-label={setupOpen ? "Collapse setup" : "Expand setup"}
+            >
+              {setupOpen ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
             </ActionIcon>
-          </Group>
-
+          }
+        >
           <Collapse expanded={setupOpen}>
             <Stack gap="sm">
               {configError && (
@@ -410,7 +428,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
               {ttsModel && (
                 <Group gap="xs" mt={-6}>
                   {ttsModel.streaming ? (
-                    <Badge size="sm" color="teal" variant="light">
+                    <Badge size="sm" color="magenta" variant="light">
                       streaming — speaks while generating
                     </Badge>
                   ) : (
@@ -555,13 +573,13 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
               </div>
             </Stack>
           </Collapse>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
 
       {/* Right: the call itself */}
       <Grid.Col span={{ base: 12, md: 7 }}>
         <Stack gap="md">
-          <Paper withBorder p="lg" radius="md">
+          <SectionCard>
             <Stack align="center" gap="xs">
               <CallOrb
                 phase={phase}
@@ -686,7 +704,15 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
               </Group>
 
               <Collapse expanded={historyOpen} w="100%">
-                <Paper withBorder p="xs" radius="sm" w="100%">
+                <Box
+                  w="100%"
+                  p="xs"
+                  style={{
+                    background: "var(--app-surface-2)",
+                    border: "1px solid var(--app-border)",
+                    borderRadius: "var(--mantine-radius-md)",
+                  }}
+                >
                   {conversations.length === 0 ? (
                     <Text size="xs" c="dimmed" ta="center" py="xs">
                       Nothing saved yet. Calls are kept only when you press Save.
@@ -722,22 +748,19 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                       </Stack>
                     </ScrollArea.Autosize>
                   )}
-                </Paper>
+                </Box>
               </Collapse>
 
               {state?.stats && (state.stats.listenMs || state.stats.firstAudioMs) && (
-                <Text size="xs" c="dimmed">
+                <Text size="xs" c="dimmed" className="app-mono">
                   heard {fmtMs(state.stats.listenMs)} · thought {fmtMs(state.stats.thinkMs)} · first audio{" "}
                   {fmtMs(state.stats.firstAudioMs)}
                 </Text>
               )}
             </Stack>
-          </Paper>
+          </SectionCard>
 
-          <Paper withBorder p="md" radius="md">
-            <Title order={6} mb="xs">
-              Conversation
-            </Title>
+          <SectionCard title="Conversation" icon={<IconMessage size={14} />}>
             <ScrollArea.Autosize mah={380} viewportRef={transcriptRef} offsetScrollbars type="auto">
               <Stack gap="xs">
                 {(state?.droppedTurns ?? 0) > 0 && (
@@ -756,7 +779,14 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                   <Bubble key={i} role={m.role} text={m.content} />
                 ))}
                 {state?.streamingReasoning && (
-                  <Paper withBorder p="xs" radius="sm" bg="var(--mantine-color-default-hover)">
+                  <Box
+                    p="xs"
+                    style={{
+                      background: "var(--app-surface-2)",
+                      border: "1px dashed var(--app-border)",
+                      borderRadius: "var(--mantine-radius-md)",
+                    }}
+                  >
                     <Group gap={6} mb={4}>
                       <IconBrain size={14} />
                       <Text size="xs" fw={600} c="dimmed">
@@ -766,7 +796,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                     <Text size="xs" c="dimmed" lineClamp={6}>
                       {state.streamingReasoning}
                     </Text>
-                  </Paper>
+                  </Box>
                 )}
                 {state?.streamingText && (
                   <Bubble role="assistant" text={state.streamingText} speaking={state.speakingText} />
@@ -811,7 +841,7 @@ export function CallPanel({ models, registeredIds, serverRunning }: Props) {
                 <IconSend size={18} />
               </ActionIcon>
             </Group>
-          </Paper>
+          </SectionCard>
         </Stack>
       </Grid.Col>
     </Grid>
@@ -830,27 +860,17 @@ function Bubble({ role, text, speaking }: { role: "user" | "assistant"; text: st
   const parts = speaking && text.includes(speaking) ? text.split(speaking) : null;
   return (
     <Group justify={isUser ? "flex-end" : "flex-start"} wrap="nowrap">
-      <Paper
-        withBorder
-        p="xs"
-        radius="md"
-        maw="85%"
-        bg={isUser ? "var(--mantine-color-blue-light)" : undefined}
-      >
-        <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
-          {parts ? (
-            <>
-              {parts[0]}
-              <Text component="span" size="sm" fw={600} c="teal">
-                {speaking}
-              </Text>
-              {parts.slice(1).join(speaking)}
-            </>
-          ) : (
-            text
-          )}
-        </Text>
-      </Paper>
+      <div className="call-bubble" data-role={role}>
+        {parts ? (
+          <>
+            {parts[0]}
+            <span className="call-speaking">{speaking}</span>
+            {parts.slice(1).join(speaking)}
+          </>
+        ) : (
+          text
+        )}
+      </div>
     </Group>
   );
 }
@@ -924,43 +944,44 @@ function CallOrb({
   // keyboard route in at all.
   const label = ORB_LABEL[phase] ?? PHASE_LABEL[phase];
   const inert = phase === "listening" || phase === "hearing" ? handsFree : false;
+  const hearing = phase === "hearing" || phase === "listening";
 
   return (
-    <Box
-      component="button"
-      type="button"
-      aria-label={label}
-      aria-busy={busy || undefined}
-      aria-live="polite"
-      disabled={disabled && phase === "idle"}
-      {...handlers}
-      style={{
-        width: 132,
-        height: 132,
-        padding: 0,
-        borderRadius: "50%",
-        border: "none",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: disabled && phase === "idle" ? "not-allowed" : inert ? "default" : "pointer",
-        opacity: disabled && phase === "idle" ? 0.5 : 1,
-        background: `var(--mantine-color-${color}-light)`,
-        boxShadow: `0 0 0 ${ring}px var(--mantine-color-${color}-light)`,
-        transition: "box-shadow 90ms linear, background 200ms",
-        userSelect: "none",
-        touchAction: "manipulation",
-      }}
+    <div
+      className="call-orb-wrap"
+      style={{ ["--orb-color" as string]: `var(--mantine-color-${color}-5)` }}
     >
-      {busy ? (
-        <Loader size="lg" color={color} />
-      ) : phase === "idle" ? (
-        <IconPhone size={46} color={`var(--mantine-color-${color}-filled)`} />
-      ) : phase === "speaking" ? (
-        <IconPlayerStopFilled size={40} color={`var(--mantine-color-${color}-filled)`} />
-      ) : (
-        <IconMicrophone size={46} color={`var(--mantine-color-${color}-filled)`} />
+      {/* Driven by the live mic level, so an open microphone is visible. */}
+      {hearing && (
+        <span
+          className="call-ring"
+          data-role="level"
+          style={{ width: 132 + ring * 2, height: 132 + ring * 2 }}
+        />
       )}
-    </Box>
+      {busy && <span className="call-ring" data-role="busy" />}
+
+      <Box
+        component="button"
+        type="button"
+        className="call-orb"
+        aria-label={label}
+        aria-busy={busy || undefined}
+        aria-live="polite"
+        disabled={disabled && phase === "idle"}
+        data-inert={inert || undefined}
+        {...handlers}
+      >
+        {busy ? (
+          <Loader size="lg" color={color} />
+        ) : phase === "idle" ? (
+          <IconPhone size={46} />
+        ) : phase === "speaking" ? (
+          <IconPlayerStopFilled size={40} />
+        ) : (
+          <IconMicrophone size={46} />
+        )}
+      </Box>
+    </div>
   );
 }

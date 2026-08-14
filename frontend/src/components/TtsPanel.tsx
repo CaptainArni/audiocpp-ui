@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Grid, Paper, Stack, Text, Textarea, Title } from "@mantine/core";
+import { Button, Grid, Stack, Text, Textarea } from "@mantine/core";
 import { IconWaveSine } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
@@ -8,6 +8,7 @@ import { ModelSelect } from "./ModelSelect";
 import { VoicePicker, type VoiceValue } from "./VoicePicker";
 import { ParamsAccordion } from "./ParamsAccordion";
 import { OutputPlayer } from "./OutputPlayer";
+import { SectionCard } from "./ui/primitives";
 import { inspectWav } from "../lib/wav";
 
 interface Props {
@@ -130,9 +131,8 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
   return (
     <Grid gap="md">
       <Grid.Col span={{ base: 12, md: 7 }}>
-        <Paper withBorder p="md" radius="md">
+        <SectionCard title="Text to speech" icon={<IconWaveSine size={14} />}>
           <Stack gap="md">
-            <Title order={5}>Text to speech</Title>
             <ModelSelect
               models={models}
               task="tts"
@@ -167,6 +167,7 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
                 loading={generating}
                 disabled={!model || !serverRunning}
                 size="md"
+                className={generating ? "app-working" : undefined}
               >
                 Generate
               </Button>
@@ -175,9 +176,14 @@ export function TtsPanel({ models, registeredIds, serverRunning }: Props) {
                   Generating… the first request for a model loads it into VRAM, which can take a little while.
                 </Text>
               )}
+              {!serverRunning && (
+                <Text size="xs" c="dimmed" mt="xs">
+                  The audio server is stopped — press Start in the bar above first.
+                </Text>
+              )}
             </div>
           </Stack>
-        </Paper>
+        </SectionCard>
       </Grid.Col>
       <Grid.Col span={{ base: 12, md: 5 }}>
         <OutputPlayer current={current} refreshKey={refreshKey} />

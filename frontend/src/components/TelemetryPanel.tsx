@@ -5,24 +5,36 @@ import {
   Badge,
   Button,
   Group,
-  Paper,
   ScrollArea,
   Stack,
   Table,
   Text,
-  Title,
   Tooltip,
 } from "@mantine/core";
-import { IconDeviceMobile, IconDownload, IconFlame, IconInfoCircle, IconRefresh } from "@tabler/icons-react";
+import {
+  IconActivity,
+  IconDeviceMobile,
+  IconDownload,
+  IconFlame,
+  IconInfoCircle,
+  IconRefresh,
+  IconServer,
+  IconStack2,
+} from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import type { AndroidApkInfo, Telemetry } from "../types";
+import { EmptyState, SectionCard, StatusDot } from "./ui/primitives";
+
+/** Kept out of the JSX so the quotes around "Warm" need no escaping. */
+const WARM_HINT =
+  'Generate speech, transcribe audio or run OCR and per-model throughput shows up here. "Warm" means the model has served a request since the server last started — a proxy for being loaded in VRAM.';
 
 const KIND_COLOR: Record<string, string> = {
-  tts: "grape",
+  tts: "violet",
   asr: "blue",
   ocr: "teal",
-  chat: "violet",
+  chat: "indigo",
   call: "cyan",
 };
 
@@ -106,25 +118,29 @@ export function TelemetryPanel() {
 
   return (
     <Stack gap="md">
-      <Paper withBorder p="md" radius="md">
-        <Group justify="space-between">
-          <Title order={5}>Inference server</Title>
-          <Badge
-            size="lg"
-            variant={server?.state === "running" ? "filled" : "light"}
-            color={
-              server?.state === "running"
-                ? "green"
-                : server?.state === "starting"
-                  ? "yellow"
-                  : server?.state === "error"
-                    ? "red"
-                    : "gray"
-            }
-          >
-            {server?.state ?? "…"}
-          </Badge>
-        </Group>
+      <SectionCard
+        title="Inference server"
+        icon={<IconServer size={14} />}
+        actions={
+          <Group gap={6}>
+            <StatusDot
+              tone={
+                server?.state === "running"
+                  ? "ok"
+                  : server?.state === "starting"
+                    ? "busy"
+                    : server?.state === "error"
+                      ? "error"
+                      : "idle"
+              }
+              pulse={server?.state === "starting"}
+            />
+            <Text size="xs" fw={600} c={server?.state === "running" ? "teal.4" : "dimmed"}>
+              {server?.state ?? "…"}
+            </Text>
+          </Group>
+        }
+      >
         {error && (
           <Alert color="red" variant="light" mt="sm">
             {error}
@@ -143,11 +159,12 @@ export function TelemetryPanel() {
             {server.lastError}
           </Alert>
         )}
-      </Paper>
+      </SectionCard>
 
-      <Paper withBorder p="md" radius="md">
-        <Group justify="space-between" mb="sm">
-          <Title order={5}>Models</Title>
+      <SectionCard
+        title="Models"
+        icon={<IconStack2 size={14} />}
+        actions={
           <Tooltip
             label={
               warmCount
@@ -156,10 +173,10 @@ export function TelemetryPanel() {
             }
           >
             <Button
-              size="xs"
+              size="compact-xs"
               variant="light"
               color="orange"
-              leftSection={<IconFlame size={14} />}
+              leftSection={<IconFlame size={13} />}
               onClick={() => unload()}
               loading={unloading === "*"}
               // Only gated on the server being up. `warmed` is a proxy — it
@@ -171,12 +188,14 @@ export function TelemetryPanel() {
               Free VRAM
             </Button>
           </Tooltip>
-        </Group>
+        }
+      >
         {models.length === 0 ? (
-          <Alert icon={<IconInfoCircle size={18} />} color="gray" variant="light">
-            No activity yet. Generate speech, transcribe audio, or run OCR and per-model throughput shows up here.
-            "Warm" means the model has served a request since the server last started (a proxy for loaded in VRAM).
-          </Alert>
+          <EmptyState
+            icon={<IconStack2 size={26} />}
+            title="No activity yet"
+            hint={WARM_HINT}
+          />
         ) : (
           <Table.ScrollContainer minWidth={520}>
             <Table verticalSpacing="xs" highlightOnHover>
@@ -196,7 +215,7 @@ export function TelemetryPanel() {
                 {models.map((m) => (
                   <Table.Tr key={m.model}>
                     <Table.Td>
-                      <Text size="sm" style={{ wordBreak: "break-all" }}>
+                      <Text size="sm" className="app-mono" style={{ wordBreak: "break-all" }}>
                         {m.model}
                       </Text>
                     </Table.Td>
@@ -210,9 +229,9 @@ export function TelemetryPanel() {
                         {m.warmed ? "warm" : "cold"}
                       </Badge>
                     </Table.Td>
-                    <Table.Td>{m.count}</Table.Td>
-                    <Table.Td>{fmtMs(m.lastMs)}</Table.Td>
-                    <Table.Td>
+                    <Table.Td className="app-mono">{m.count}</Table.Td>
+                    <Table.Td className="app-mono">{fmtMs(m.lastMs)}</Table.Td>
+                    <Table.Td className="app-mono">
                       {m.lastThroughput != null ? `${m.lastThroughput} ${m.throughputUnit ?? ""}` : "—"}
                     </Table.Td>
                     <Table.Td>
@@ -241,12 +260,9 @@ export function TelemetryPanel() {
             </Table>
           </Table.ScrollContainer>
         )}
-      </Paper>
+      </SectionCard>
 
-      <Paper withBorder p="md" radius="md">
-        <Title order={5} mb="sm">
-          Recent generations
-        </Title>
+      <SectionCard title="Recent generations" icon={<IconActivity size={14} />}>
         {events.length === 0 ? (
           <Text size="sm" c="dimmed">
             Nothing yet.
@@ -285,7 +301,7 @@ export function TelemetryPanel() {
             </Stack>
           </ScrollArea.Autosize>
         )}
-      </Paper>
+      </SectionCard>
 
       {/* The phone app, offered from the machine that already builds it.
           Studio does not build the APK — Gradle does, from the IDE — so this
@@ -293,19 +309,17 @@ export function TelemetryPanel() {
           the phone and tapping Download is the whole side-load path; over the
           Cloudflare tunnel it works from outside the LAN too, and the download
           sits behind Access like everything else here. */}
-      <Paper withBorder p="md" radius="md">
-        <Group justify="space-between" mb="sm">
-          <Group gap="xs">
-            <IconDeviceMobile size={18} />
-            <Title order={5}>Companion app</Title>
-          </Group>
+      <SectionCard
+        title="Companion app"
+        icon={<IconDeviceMobile size={14} />}
+        actions={
           <Tooltip label="Re-check the APK on disk">
-            <ActionIcon variant="subtle" color="gray" onClick={() => void loadApk()}>
-              <IconRefresh size={16} />
+            <ActionIcon variant="subtle" color="gray" size="sm" onClick={() => void loadApk()}>
+              <IconRefresh size={15} />
             </ActionIcon>
           </Tooltip>
-        </Group>
-
+        }
+      >
         {!apk?.available ? (
           <Text size="sm" c="dimmed">
             {apk?.reason ?? "Looking for a build…"}
@@ -340,7 +354,7 @@ export function TelemetryPanel() {
             </Group>
           </Stack>
         )}
-      </Paper>
+      </SectionCard>
     </Stack>
   );
 }
@@ -351,7 +365,7 @@ function Stat({ label, value }: { label: string; value: string }) {
       <Text size="xs" c="dimmed">
         {label}
       </Text>
-      <Text size="sm" fw={600}>
+      <Text size="sm" fw={600} className="app-mono">
         {value}
       </Text>
     </div>

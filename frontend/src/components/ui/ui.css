@@ -1,0 +1,137 @@
+/* Shared primitives for the Studio console: status dots, meta chips, section
+   cards and empty states. Everything here reads the tokens published by
+   theme.ts's cssVariablesResolver rather than re-picking colours. */
+
+/* ---- StatusDot --------------------------------------------------------- */
+
+.app-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dot-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-color) 18%, transparent);
+}
+
+/* Reserved for states that are genuinely in motion — a server coming up, a
+   model rendering. A dot that always pulses stops meaning anything. */
+.app-dot[data-pulse] {
+  animation: app-dot-pulse 1.6s var(--app-ease) infinite;
+}
+
+@keyframes app-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--dot-color) 26%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--dot-color) 6%, transparent);
+  }
+}
+
+/* ---- Meta -------------------------------------------------------------- */
+
+/* The mono key/value run used for host, pid, device, sizes and timings. */
+.app-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 10px;
+  font-family: var(--mantine-font-family-monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  color: var(--mantine-color-dimmed);
+  min-width: 0;
+}
+
+.app-meta > * + *::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--app-surface-3);
+}
+
+.app-meta-item {
+  white-space: nowrap;
+}
+
+.app-meta-item b {
+  font-weight: 600;
+  color: var(--mantine-color-dark-1);
+}
+
+/* ---- SectionCard ------------------------------------------------------- */
+
+.app-card {
+  background: var(--app-surface-1);
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-lg);
+  box-shadow: var(--app-shadow-card);
+  min-width: 0;
+}
+
+.app-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--app-border);
+  min-width: 0;
+}
+
+/* A head with nothing under it but the body's own padding would draw a rule
+   across a card that has no sections — drop it when there's no title. */
+.app-card-head[data-bare] {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.app-card-head-icon {
+  display: flex;
+  color: var(--app-accent);
+}
+
+.app-card-title {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dark-1);
+  white-space: nowrap;
+}
+
+.app-card-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-card-body {
+  padding: 14px;
+  min-width: 0;
+}
+
+.app-card-body[data-flush] {
+  padding: 0;
+}
+
+/* ---- EmptyState -------------------------------------------------------- */
+
+.app-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 20px;
+  text-align: center;
+  border: 1px dashed var(--app-border);
+  border-radius: var(--mantine-radius-lg);
+  color: var(--mantine-color-dimmed);
+  min-height: 120px;
+}
+
+.app-empty-icon {
+  color: var(--app-surface-3);
+  display: flex;
+}

@@ -2,7 +2,7 @@
 
 A local **desktop app** (and browser app) for [audio.cpp](https://github.com/0xShug0/audio.cpp): generate **TTS**, **clone a voice** from an uploaded clip **or a live mic recording**, **transcribe** audio, video or the microphone (ASR), hold a **spoken conversation** with a local chat model in that cloned voice, **generate music** from a one-line idea, run **page-photo OCR**, keep a **library of readings**, and **start/stop** the inference server — from a native window or your browser. It's also the backend for the [Android companion app](https://github.com/CaptainArni/audiocpp-android).
 
-![audio.cpp Studio — the Call tab, with the inference server running](docs/screenshot-studio.png)
+![audio.cpp Studio — a spoken conversation in progress on the Call tab, listening to the caller, with the turn's latencies underneath](docs/screenshot-studio.png)
 
 ## Architecture
 

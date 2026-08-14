@@ -4,6 +4,7 @@ import { IconMicrophone, IconPlayerStopFilled, IconRefresh } from "@tabler/icons
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
 import { blobToWavFile } from "../lib/wav";
+import { AudioPlayer } from "./ui/AudioPlayer";
 
 type State = "idle" | "requesting" | "recording" | "processing" | "recorded" | "error";
 
@@ -252,11 +253,7 @@ export function MicRecorder({
 
       {state === "recorded" && (
         <Stack gap="xs">
-          {previewUrl && (
-            <audio controls src={previewUrl} style={{ width: "100%" }}>
-              <track kind="captions" />
-            </audio>
-          )}
+          {previewUrl && <AudioPlayer key={previewUrl} src={previewUrl} variant="full" />}
           <Button leftSection={<IconRefresh size={16} />} onClick={reset} variant="subtle" size="xs">
             Record again
           </Button>

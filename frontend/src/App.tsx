@@ -1,33 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  ActionIcon,
-  AppShell,
-  Badge,
-  Collapse,
-  Container,
-  Group,
-  Paper,
-  Stack,
-  Tabs,
-  Text,
-  Title,
-} from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
-import {
-  IconActivity,
-  IconBooks,
-  IconChevronDown,
-  IconChevronUp,
-  IconMicrophone,
-  IconMusic,
-  IconPhone,
-  IconScan,
-  IconUsers,
-  IconWaveSine,
-} from "@tabler/icons-react";
+import { AppShell, Tabs } from "@mantine/core";
+import { useDisclosure, useLocalStorage, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { api } from "./api";
-import type { DiscoveredModel, ServerRunState, ServerStatus } from "./types";
+import type { DiscoveredModel, ServerStatus } from "./types";
 import { ServerControlBar } from "./components/ServerControlBar";
 import { TtsPanel } from "./components/TtsPanel";
 import { AsrPanel } from "./components/AsrPanel";
@@ -37,29 +13,41 @@ import { VoicesPanel } from "./components/VoicesPanel";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { OcrPanel } from "./components/OcrPanel";
 import { TelemetryPanel } from "./components/TelemetryPanel";
-import { LogPanel } from "./components/LogPanel";
-import { VramMenu } from "./components/VramMenu";
-import logo from "./assets/logo.png";
+import { AppNav, NAV_ITEMS } from "./components/shell/AppNav";
+import { TopBar } from "./components/shell/TopBar";
+import { LogDock } from "./components/shell/LogDock";
+import { LOG_EDITOR_HEIGHT } from "./components/LogPanel";
+import "./components/shell/shell.css";
 
-const STATE_COLOR: Record<ServerRunState, string> = {
-  stopped: "gray",
-  starting: "yellow",
-  running: "green",
-  error: "red",
-};
+const NAV_WIDTH = 208;
+const NAV_WIDTH_COLLAPSED = 56;
+/** Dock bar + the panel's own toolbar and padding around the editor. */
+const DOCK_CLOSED = 38;
+const DOCK_OPEN = DOCK_CLOSED + LOG_EDITOR_HEIGHT + 42;
 
 export function App() {
   const [models, setModels] = useState<DiscoveredModel[]>([]);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [registeredIds, setRegisteredIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [logsOpen, { toggle: toggleLogs }] = useDisclosure(true);
+  const [tab, setTab] = useState<string>("tts");
+  const [logsOpen, { toggle: toggleLogs }] = useDisclosure(false);
+  const [navCollapsed, setNavCollapsed] = useLocalStorage({
+    key: "audiocpp.navCollapsed",
+    defaultValue: false,
+  });
+  // The same page is occasionally opened from a phone through the tunnel; there
+  // the rail collapses itself rather than eating half the width.
+  const narrow = useMediaQuery("(max-width: 62em)");
+  const collapsed = navCollapsed || !!narrow;
 
   const loadModels = useCallback(() => {
     api
       .getModels()
       .then(setModels)
-      .catch((err) => notifications.show({ color: "red", title: "Model scan failed", message: err.message }));
+      .catch((err) =>
+        notifications.show({ color: "red", title: "Model scan failed", message: err.message }),
+      );
   }, []);
 
   useEffect(() => {
@@ -69,7 +57,11 @@ export function App() {
   // Poll server status.
   useEffect(() => {
     let alive = true;
-    const tick = () => api.getStatus().then((s) => alive && setStatus(s)).catch(() => {});
+    const tick = () =>
+      api
+        .getStatus()
+        .then((s) => alive && setStatus(s))
+        .catch(() => {});
     tick();
     const id = setInterval(tick, 2000);
     return () => {
@@ -88,12 +80,34 @@ export function App() {
     }
   }, [state]);
 
+  // Ctrl+1…8 walks the rail, Ctrl+` toggles the dock. Both skip text fields, so
+  // they can't fire while someone is writing a caption or a set of lyrics.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.altKey || e.metaKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      if (e.code === "Backquote") {
+        e.preventDefault();
+        toggleLogs();
+        return;
+      }
+      const n = Number(e.key);
+      if (Number.isInteger(n) && n >= 1 && n <= NAV_ITEMS.length) {
+        e.preventDefault();
+        setTab(NAV_ITEMS[n - 1].value);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleLogs]);
+
   const onStart = useCallback(async (ids: string[]) => {
     setBusy(true);
     try {
       const s = await api.start(ids);
       setStatus(s);
-      notifications.show({ color: "blue", message: "Server starting…" });
+      notifications.show({ color: "violet", message: "Server starting…" });
     } catch (err) {
       notifications.show({ color: "red", title: "Start failed", message: (err as Error).message });
     } finally {
@@ -121,28 +135,41 @@ export function App() {
   const running = state === "running";
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="sm">
-            <img src={logo} alt="" height={34} style={{ display: "block" }} />
-            <Title order={4}>audio.cpp Studio</Title>
-            <Text size="sm" c="dimmed">
-              local TTS · voice cloning · ASR · music
-            </Text>
-          </Group>
-          <Group gap="sm">
-            <VramMenu />
-            <Badge color={STATE_COLOR[state ?? "stopped"]} variant={running ? "filled" : "light"} size="lg">
-              server: {state ?? "…"}
-            </Badge>
-          </Group>
-        </Group>
-      </AppShell.Header>
+    // Tabs wraps the whole shell so that the rail (Tabs.List, in the navbar) and
+    // the panels (in main) can be in different regions while staying one Tabs.
+    // This is what keeps every panel mounted across navigation — see
+    // docs/plan-ui-redesign.md and lib/callSession.ts.
+    <Tabs
+      value={tab}
+      onChange={(v) => v && setTab(v)}
+      orientation="vertical"
+      className="app-tabs"
+    >
+      <AppShell
+        header={{ height: 48 }}
+        navbar={{
+          width: collapsed ? NAV_WIDTH_COLLAPSED : NAV_WIDTH,
+          // 0, never a breakpoint: the rail narrows to icons on a small screen
+          // rather than disappearing, so there is always a way between tabs.
+          breakpoint: 0,
+        }}
+        footer={{ height: logsOpen ? DOCK_OPEN : DOCK_CLOSED }}
+        padding="md"
+      >
+        <AppShell.Header withBorder={false}>
+          <TopBar
+            status={status}
+            navCollapsed={collapsed}
+            onToggleNav={() => setNavCollapsed((c) => !c)}
+          />
+        </AppShell.Header>
 
-      <AppShell.Main>
-        <Container size="lg" px={0}>
-          <Stack gap="lg">
+        <AppShell.Navbar withBorder={false}>
+          <AppNav collapsed={collapsed} />
+        </AppShell.Navbar>
+
+        <AppShell.Main>
+          <div className="app-content">
             <ServerControlBar
               status={status}
               models={models}
@@ -152,85 +179,37 @@ export function App() {
               busy={busy}
             />
 
-            <Tabs defaultValue="tts">
-              <Tabs.List>
-                <Tabs.Tab value="tts" leftSection={<IconWaveSine size={16} />}>
-                  Text to Speech
-                </Tabs.Tab>
-                <Tabs.Tab value="asr" leftSection={<IconMicrophone size={16} />}>
-                  Transcribe
-                </Tabs.Tab>
-                <Tabs.Tab value="call" leftSection={<IconPhone size={16} />}>
-                  Call
-                </Tabs.Tab>
-                <Tabs.Tab value="music" leftSection={<IconMusic size={16} />}>
-                  Music
-                </Tabs.Tab>
-                <Tabs.Tab value="voices" leftSection={<IconUsers size={16} />}>
-                  Saved Voices
-                </Tabs.Tab>
-                <Tabs.Tab value="library" leftSection={<IconBooks size={16} />}>
-                  Library
-                </Tabs.Tab>
-                <Tabs.Tab value="ocr" leftSection={<IconScan size={16} />}>
-                  OCR
-                </Tabs.Tab>
-                <Tabs.Tab value="telemetry" leftSection={<IconActivity size={16} />}>
-                  Telemetry
-                </Tabs.Tab>
-              </Tabs.List>
+            <Tabs.Panel value="tts">
+              <TtsPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+            </Tabs.Panel>
+            <Tabs.Panel value="asr">
+              <AsrPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+            </Tabs.Panel>
+            <Tabs.Panel value="call">
+              <CallPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+            </Tabs.Panel>
+            <Tabs.Panel value="music">
+              <MusicPanel registeredIds={registeredIds} serverRunning={running} />
+            </Tabs.Panel>
+            <Tabs.Panel value="voices">
+              <VoicesPanel />
+            </Tabs.Panel>
+            <Tabs.Panel value="library">
+              <LibraryPanel models={models} registeredIds={registeredIds} serverRunning={running} />
+            </Tabs.Panel>
+            <Tabs.Panel value="ocr">
+              <OcrPanel />
+            </Tabs.Panel>
+            <Tabs.Panel value="telemetry">
+              <TelemetryPanel />
+            </Tabs.Panel>
+          </div>
+        </AppShell.Main>
 
-              <Tabs.Panel value="tts" pt="md">
-                <TtsPanel models={models} registeredIds={registeredIds} serverRunning={running} />
-              </Tabs.Panel>
-              <Tabs.Panel value="asr" pt="md">
-                <AsrPanel models={models} registeredIds={registeredIds} serverRunning={running} />
-              </Tabs.Panel>
-              <Tabs.Panel value="call" pt="md">
-                <CallPanel models={models} registeredIds={registeredIds} serverRunning={running} />
-              </Tabs.Panel>
-              <Tabs.Panel value="music" pt="md">
-                <MusicPanel registeredIds={registeredIds} serverRunning={running} />
-              </Tabs.Panel>
-              <Tabs.Panel value="voices" pt="md">
-                <VoicesPanel />
-              </Tabs.Panel>
-              <Tabs.Panel value="library" pt="md">
-                <LibraryPanel models={models} registeredIds={registeredIds} serverRunning={running} />
-              </Tabs.Panel>
-              <Tabs.Panel value="ocr" pt="md">
-                <OcrPanel />
-              </Tabs.Panel>
-              <Tabs.Panel value="telemetry" pt="md">
-                <TelemetryPanel />
-              </Tabs.Panel>
-            </Tabs>
-
-            <Paper withBorder p="md" radius="md">
-              <Group justify="space-between">
-                <Text size="sm" fw={500}>
-                  Logs
-                </Text>
-                <ActionIcon variant="subtle" onClick={toggleLogs}>
-                  {logsOpen ? <IconChevronUp size={18} /> : <IconChevronDown size={18} />}
-                </ActionIcon>
-              </Group>
-              {/* keepMounted={false} is required: Mantine's default keepMounted
-                  hides the collapsed subtree with React 19's <Activity>, which
-                  tears down and re-runs effects while keeping refs/state. That
-                  makes @monaco-editor/react dispose its editor on collapse and
-                  then call setModel() on the disposed instance on expand
-                  ("InstantiationService has been disposed"). A real unmount is
-                  cheap here — the SSE stream replays the log backlog on
-                  reconnect, so the panel comes back with the lines that arrived
-                  while it was closed. */}
-              <Collapse expanded={logsOpen} keepMounted={false}>
-                <LogPanel />
-              </Collapse>
-            </Paper>
-          </Stack>
-        </Container>
-      </AppShell.Main>
-    </AppShell>
+        <AppShell.Footer withBorder={false}>
+          <LogDock open={logsOpen} onToggle={toggleLogs} />
+        </AppShell.Footer>
+      </AppShell>
+    </Tabs>
   );
 }
