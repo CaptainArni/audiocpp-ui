@@ -164,6 +164,9 @@ def scan_models() -> list[dict]:
         # Both are lazy, so only the variant actually used costs VRAM.
         if cat and cat.variants:
             for v in cat.variants:
+                # An optional variant the package does not ship (see requires_dir).
+                if v.requires_dir and not (entry / v.requires_dir).is_dir():
+                    continue
                 models.append(
                     make(
                         f"{entry.name}@{v.id}",

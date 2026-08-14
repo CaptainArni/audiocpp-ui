@@ -52,6 +52,11 @@ class ModelVariant:
     load_options: dict[str, str] = field(default_factory=dict)
     session_options: dict[str, str] = field(default_factory=dict)
     default: bool = False
+    # Subdirectory that must exist inside the package for this variant to be
+    # offered. ACE-Step's XL variants are ~19 GB each and optional in audio.cpp's
+    # model spec, so a package legitimately ships without them; listing a variant
+    # nobody has installed would only produce a row that fails on first use.
+    requires_dir: str = ""
     # Parameter defaults the UI should show for this variant. Turbo is
     # distilled to ~8 steps and effectively ignores classifier-free guidance;
     # base wants many more steps and is the variant guidance_scale acts on.
@@ -217,6 +222,30 @@ _MATCHERS: list[tuple[Callable[[str], bool], CatalogEntry]] = [
                     id="base",
                     label="Base (slower, guidance)",
                     load_options={"ace_step.dit_model_path": "acestep-v15-base"},
+                    steps=30,
+                    guidance_scale=7.0,
+                ),
+                # XL: 32 layers x 2560 against turbo's 24 x 2048, with the
+                # condition encoder left at 2048. Shipped as four safetensors
+                # shards in **float32**, which is why these two ask for bf16
+                # storage: measured on a 5090, 20 s of music took 87 s at native
+                # f32 (19.9 GB of weights on a 32 GB card) against 24 s at bf16.
+                ModelVariant(
+                    id="xl-turbo",
+                    label="XL Turbo (large, 8 steps)",
+                    load_options={"ace_step.dit_model_path": "acestep-v15-xl-turbo"},
+                    session_options={"ace_step.dit_weight_type": "bf16"},
+                    requires_dir="acestep-v15-xl-turbo",
+                    steps=8,
+                    guidance_scale=1.0,
+                    supports_guidance=False,
+                ),
+                ModelVariant(
+                    id="xl-sft",
+                    label="XL Base (large, slower, guidance)",
+                    load_options={"ace_step.dit_model_path": "acestep-v15-xl-sft"},
+                    session_options={"ace_step.dit_weight_type": "bf16"},
+                    requires_dir="acestep-v15-xl-sft",
                     steps=30,
                     guidance_scale=7.0,
                 ),

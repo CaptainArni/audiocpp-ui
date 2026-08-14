@@ -24,7 +24,12 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file, save_file
 
-VARIANTS = ("acestep-v15-turbo", "acestep-v15-base")
+VARIANTS = (
+    "acestep-v15-turbo",
+    "acestep-v15-base",
+    "acestep-v15-xl-turbo",
+    "acestep-v15-xl-sft",
+)
 
 
 def convert(variant_dir: Path, *, overwrite: bool = False) -> bool:
