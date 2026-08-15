@@ -122,7 +122,7 @@ prompt = "OCR:"
 
 [call]                       # the Call tab. Chat models are NOT listed here —
                              # they are discovered from llama.cpp's /v1/models.
-default_chat_model = "gemma-4-e4b-it"
+default_chat_model = "gemma-4-e4b-it-ud-q8-k-xl"
 default_tts_model = "VoxCPM2"
 default_asr_model = "Nemotron-3.5-ASR-Streaming-0.6B-GGUF"
 thinking_tokens = 900        # extra budget when thinking is on (it shares max_tokens)

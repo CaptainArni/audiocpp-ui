@@ -739,10 +739,27 @@ async def api_call_config():
         # A missing llama.cpp must not stop the tab from rendering — it should
         # render and say what to start.
         chat_models, chat_error = [], str(e)
+    # A hand-typed default goes stale when llama-swap renames a model: the id
+    # carries the quantization suffix, which changes on re-download. Resolve it
+    # against what the server actually serves — the configured id wins when
+    # present, otherwise the first discovered model (loaded ones first) is
+    # used and the log says why — instead of every client with a blank stored
+    # model failing on its first turn. Mirrors ``llama_default_ocr_model``.
+    # When llama.cpp is down there is nothing to fall back to; ``chatError``
+    # already tells the clients.
+    default_chat_model = cfg.call_default_chat_model
+    known = {m["id"] for m in chat_models}
+    if default_chat_model and chat_models and default_chat_model not in known:
+        log_bus.emit(
+            "warn",
+            f"[call].default_chat_model {default_chat_model!r} is not served by llama.cpp — "
+            f"using {chat_models[0]['id']!r}; update config.toml",
+        )
+        default_chat_model = chat_models[0]["id"]
     return {
         "chatModels": chat_models,
         "chatError": chat_error,
-        "defaultChatModel": cfg.call_default_chat_model,
+        "defaultChatModel": default_chat_model,
         "defaultTtsModel": cfg.call_default_tts_model,
         "defaultAsrModel": cfg.call_default_asr_model,
         "lengths": cfg.call_lengths,
